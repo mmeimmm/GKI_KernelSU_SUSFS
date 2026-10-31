@@ -44,6 +44,10 @@ on:
         default: "Sun Dec 01 08:10:00 UTC 2024"
 
       # ==================== 功能开关 ====================
+      use_gz_kvm:
+        required: false
+        type: boolean
+        default: false
       use_zram:
         required: true
         type: boolean
@@ -186,6 +190,24 @@ jobs:
 
       - name: 检出代码仓库
         uses: actions/checkout@v7
+
+      - name: 检查 GZ/KVM 可选参数
+        if: inputs.use_gz_kvm
+        env:
+          GZ_ANDROID: ${{ inputs.android_version }}
+          GZ_KERNEL: ${{ inputs.kernel_version }}
+          GZ_SUBLEVEL: ${{ inputs.sub_level }}
+          GZ_PATCH_LEVEL: ${{ inputs.os_patch_level }}
+          GZ_DROIDSPACES: ${{ inputs.droidspaces }}
+        run: |
+          test "$GZ_ANDROID/$GZ_KERNEL/$GZ_SUBLEVEL/$GZ_PATCH_LEVEL" = "android12/5.10/226/2024-11" || {
+            echo "::error::GZ/KVM 仅适配 Android 12 / 5.10.226 / 2024-11"
+            exit 1
+          }
+          case "$GZ_DROIDSPACES" in
+            off|678) ;;
+            *) echo "::error::GZ/KVM 的 IPC ABI 使用 678 槽位；Droidspaces 请选择 off 或 678"; exit 1 ;;
+          esac
 
       - name: 初始化构建环境
         run: |
@@ -439,6 +461,12 @@ jobs:
 
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
           echo "TAG_FALLBACK=$TAG_FALLBACK" >> $GITHUB_ENV
+
+      - name: 应用 GZ/KVM 精确版本补丁
+        if: inputs.use_gz_kvm
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/gz_kvm.py" prepare \
+            --work "$KERNEL_ROOT" --report "$GITHUB_WORKSPACE/gz-kvm-report"
 
       - name: 应用 Stock Config 伪装
         run: |
@@ -1439,6 +1467,12 @@ jobs:
             echo "已导出 SUSFS 配置片段: $(wc -l < "$GITHUB_WORKSPACE/susfs-patch/susfs.config") 行"
           fi
 
+      - name: 配置 GZ/KVM 与 IPC ABI
+        if: inputs.use_gz_kvm
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/gz_kvm.py" configure \
+            --work "$KERNEL_ROOT" --report "$GITHUB_WORKSPACE/gz-kvm-report"
+
       - name: 配置内核名称
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
@@ -1525,6 +1559,7 @@ jobs:
 
       - name: 编译内核
         id: compile_kernel
+        if: ${{ !inputs.use_gz_kvm }}
         uses: nick-fields/retry@v4
         with:
           shell: bash
@@ -1594,6 +1629,45 @@ jobs:
               echo "退出码: $BUILD_STATUS"
             } >> "$LOG_FILE"
             exit "$BUILD_STATUS"
+
+      - name: 编译 GZ/KVM 内核
+        id: gz_compile_kernel
+        if: inputs.use_gz_kvm
+        uses: nick-fields/retry@v4
+        with:
+          shell: bash
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_on: timeout
+          command: |
+            set -euo pipefail
+            mkdir -p "$GITHUB_WORKSPACE/gz-kvm-report"
+            cd "$KERNEL_ROOT"
+            test -f build/build.sh
+            sed -i 's/BUILD_SYSTEM_DLKM=1/BUILD_SYSTEM_DLKM=0/' ./common/build.config.gki.aarch64
+            sed -i '/MODULES_ORDER=android\/gki_aarch64_modules/d' ./common/build.config.gki.aarch64
+            sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64
+            LTO=full BUILD_CONFIG=common/build.config.gki.aarch64 \
+              build/build.sh CC="/usr/bin/ccache clang" 2>&1 | tee -a "$GITHUB_WORKSPACE/gz-kvm-report/compile.log"
+
+      - name: 核对 GZ/KVM 成品
+        if: inputs.use_gz_kvm
+        env:
+          GZ_KSU_ENABLED: ${{ inputs.ksu_mode != '禁用KSU' }}
+          GZ_SUSFS_ENABLED: ${{ inputs.enable_susfs }}
+          GZ_BBG_ENABLED: ${{ inputs.use_bbg }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/gz_kvm.py" verify \
+            --work "$KERNEL_ROOT" --report "$GITHUB_WORKSPACE/gz-kvm-report" \
+            --ksu "$GZ_KSU_ENABLED" --susfs "$GZ_SUSFS_ENABLED" --bbg "$GZ_BBG_ENABLED"
+
+      - name: 上传 GZ/KVM 核对报告
+        if: ${{ always() && inputs.use_gz_kvm }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: GZ-KVM-${{ inputs.ksu_variant }}-${{ env.CONFIG }}-Report
+          path: gz-kvm-report/
+          if-no-files-found: warn
 
       - name: 整理编译失败日志
         if: ${{ always() && steps.compile_kernel.outcome == 'failure' }}
@@ -1684,7 +1758,7 @@ jobs:
           mv ./Image "$ANYKERNEL3/Image"
 
       - name: 构建 Boot 镜像 (Android 12)
-        if: inputs.android_version == 'android12'
+        if: inputs.android_version == 'android12' && !inputs.use_gz_kvm
         working-directory: bootimgs
         run: |
           GKI_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-${{ inputs.os_patch_level }}_${{ inputs.revision }}.zip

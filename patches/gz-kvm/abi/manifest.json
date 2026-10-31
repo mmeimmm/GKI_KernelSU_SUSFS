@@ -1,0 +1,11 @@
+{
+  "base_commit": "4968e29b7f9287a83b91a18cb497dca5c34f8506",
+  "droidspaces_commit": "c4cd876ba33a916b63bfef3dd0ccedb93cd13035",
+  "sha256": {
+    "001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch": "47fc945b2d73d9737d56c0f1c3a74cda0a95c30f9dc1b1abe546fa48940c4460",
+    "002.5.10_or_lower_use_android_abi_padding_for_posix_mqueue.patch": "31982c85f4a65ca3ec71d27903626fb0234a39c4d3e99667bc849918e42693b7",
+    "Module.symvers": "b35121c18adf4c15119d78173fc22ba04255dd72616f3b8634eeaff822ab9ad9",
+    "baseline-task_struct.txt": "aef09edf46b2355938704d5ba6518412cd1a391265c8945f8415f9d63e9345d0",
+    "baseline-user_struct.txt": "dea7621dd0320faeb675d04c990be760cacb1e7fe1d0c8c107ba627e8375e9dc"
+  }
+}

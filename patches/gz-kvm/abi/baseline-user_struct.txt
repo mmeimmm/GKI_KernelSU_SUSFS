@@ -1,0 +1,33 @@
+struct user_struct {
+	refcount_t                 __count;              /*     0     4 */
+	atomic_t                   processes;            /*     4     4 */
+	atomic_t                   sigpending;           /*     8     4 */
+
+	/* XXX 4 bytes hole, try to pack */
+
+	atomic_long_t              epoll_watches;        /*    16     8 */
+	long unsigned int          locked_shm;           /*    24     8 */
+	long unsigned int          unix_inflight;        /*    32     8 */
+	atomic_long_t              pipe_bufs;            /*    40     8 */
+	struct hlist_node          uidhash_node;         /*    48    16 */
+	/* --- cacheline 1 boundary (64 bytes) --- */
+	kuid_t                     uid;                  /*    64     4 */
+
+	/* XXX 4 bytes hole, try to pack */
+
+	atomic_long_t              locked_vm;            /*    72     8 */
+	struct ratelimit_state     ratelimit;            /*    80    40 */
+
+	/* XXX last struct has 1 hole */
+
+	u64                        android_kabi_reserved1; /*   120     8 */
+	/* --- cacheline 2 boundary (128 bytes) --- */
+	u64                        android_kabi_reserved2; /*   128     8 */
+	u64                        android_oem_data1[2]; /*   136    16 */
+
+	/* size: 152, cachelines: 3, members: 14 */
+	/* sum members: 144, holes: 2, sum holes: 8 */
+	/* member types with holes: 1, total: 1 */
+	/* last cacheline: 24 bytes */
+};
+

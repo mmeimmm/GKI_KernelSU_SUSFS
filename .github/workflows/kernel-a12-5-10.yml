@@ -69,6 +69,12 @@ on:
         default: "Sun Dec 01 08:10:00 UTC 2024"
 
       # ==================== 开关（默认关闭） ====================
+      use_gz_kvm:
+        description: "启用 GZ/KVM 共存（仅 5.10.226，需配套 TEE）"
+        required: false
+        type: boolean
+        default: false
+
       use_zram:
         description: "启用 ZRAM 增强算法"
         required: true
@@ -157,6 +163,10 @@ on:
         required: false
         type: boolean
         default: false
+      use_gz_kvm:
+        required: false
+        type: boolean
+        default: false
       called_from_main:
         description: "是否从 main.yml 调用（内部使用）"
         required: false
@@ -170,6 +180,7 @@ on:
 
 jobs:
   build-kernels-a12-5-10:
+    if: ${{ !inputs.use_gz_kvm }}
     name: "5.10.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}"
     strategy:
       fail-fast: false
@@ -266,6 +277,36 @@ jobs:
       droidspaces: ${{ inputs.droidspaces || 'off' }}
       droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
       artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+
+  build-gz-kvm:
+    if: ${{ inputs.use_gz_kvm }}
+    name: "GZ/KVM - 5.10.226-2024-11"
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+    with:
+      android_version: "android12"
+      kernel_version: "5.10"
+      sub_level: "226"
+      os_patch_level: "2024-11"
+      revision: "r8"
+      ksu_variant: ${{ inputs.kernelsu_variant }}
+      version: ${{ inputs.version || '' }}
+      build_time: ${{ inputs.build_time || '' }}
+      use_zram: ${{ inputs.use_zram }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_kpm: ${{ inputs.use_kpm }}
+      use_rekernel: ${{ inputs.use_rekernel || false }}
+      use_nomount: ${{ inputs.use_nomount || false }}
+      use_networking: ${{ inputs.use_networking || false }}
+      cve_2026_43499_patch: ${{ inputs.cve_2026_43499_patch }}
+      export_susfs_patches: ${{ inputs.export_susfs_patches || false }}
+      supp_op: false
+      enable_susfs: ${{ inputs.ksu_mode != '禁用SUSFS' && inputs.ksu_mode != '禁用KSU' }}
+      ksu_mode: ${{ inputs.ksu_mode || '关闭' }}
+      droidspaces: ${{ inputs.droidspaces || 'off' }}
+      droidspaces_ntsync: ${{ inputs.droidspaces_ntsync || false }}
+      artifact_upload_mode: ${{ inputs.artifact_upload_mode }}
+      use_gz_kvm: true
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过
   get-ksu-manager:

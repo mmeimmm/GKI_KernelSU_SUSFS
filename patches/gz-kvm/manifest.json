@@ -1,0 +1,113 @@
+{
+  "schema": "gz-kvm-build-v1",
+  "base_commit": "4968e29b7f9287a83b91a18cb497dca5c34f8506",
+  "kernel_version": "5.10.226",
+  "patch": "0001-gz-shared-stage1.patch",
+  "patch_sha256": "1e64a07bdebc24ad55234a0d0639f9410a932b0674da86e0d70b2f47519291dc",
+  "files": {
+    "arch/arm64/include/asm/kvm_asm.h": {
+      "base_sha256": "94bc4586743fc579f01587e004edb189e575fa9a722965082b897c145353f1f2",
+      "patched_sha256": "6440d5829eb35658dbaa33671e4fc875cea0f56f51ef3b74c8e09a223ac7689a"
+    },
+    "arch/arm64/include/asm/kvm_gz.h": {
+      "base_sha256": null,
+      "patched_sha256": "d4760d9a89280a5b5887f99d932f3a4938e8c5b002e0c49c128e97e402d8a06a"
+    },
+    "arch/arm64/include/asm/kvm_gz_context.h": {
+      "base_sha256": null,
+      "patched_sha256": "eb9095574bed78fcc3f85afd0eabe097f082502b119a7162ecd98e09d2c739e6"
+    },
+    "arch/arm64/include/asm/kvm_gz_hvc.h": {
+      "base_sha256": null,
+      "patched_sha256": "05e8215a102d3ddb953793813a4b2b6e9680a64e2552887d349dcbdd5159fbf9"
+    },
+    "arch/arm64/include/asm/kvm_host.h": {
+      "base_sha256": "3c5769762ce8c53e2c036af75974beee0e57cc9c7c7c278c6b80b847247ced2d",
+      "patched_sha256": "7e3d1189c7e7d6eac7de699654e4a99d14d98b02998d43095fcece2a328b778d"
+    },
+    "arch/arm64/include/asm/kvm_mmu.h": {
+      "base_sha256": "3307314342d84f928d76103799a9896a7514912c4b0604eed0fc2e32324f2821",
+      "patched_sha256": "532cb5a645c9641326a7d4b8934fe310ec12c089a329ae94de6308877fc73950"
+    },
+    "arch/arm64/kvm/Makefile": {
+      "base_sha256": "bfc730fa56783e0be29dff27cb003feae246b34ac1eb3553ab7ec0c5aa3f9d13",
+      "patched_sha256": "365e6ff358f63de051ab2532b4f0b28b790637ee9685fec74bad3c43dbe7371f"
+    },
+    "arch/arm64/kvm/arch_timer.c": {
+      "base_sha256": "295b872f9d191c43646b95d60f2674ea21a0b68575d0bf1724e8fadd7b021b8f",
+      "patched_sha256": "2808d0949135bf846e6fc0771ccbd29c35fd8baa8c762d22dcdb8564ea31e9a9"
+    },
+    "arch/arm64/kvm/arm.c": {
+      "base_sha256": "27a4716cba214480af39b104e0e5335c8ac83cf6a182f1c58b18d7d17266b4ef",
+      "patched_sha256": "42088971a4d91fc16e5485ba87d91f57762b65b65c4e9cc06e42bb074237b7be"
+    },
+    "arch/arm64/kvm/fpsimd.c": {
+      "base_sha256": "a87937a5e772e8dbc41b49b8942ac8b705f0de30ffc4b16f356665b3712b5049",
+      "patched_sha256": "85b9ea2c33434b2e61a784bef9cd901375c1919e5afd3936f7d3e6b47938737e"
+    },
+    "arch/arm64/kvm/gz.c": {
+      "base_sha256": null,
+      "patched_sha256": "3edc8618bb1d7f5b8a2f1ea7f740f1abe2a6b9f74c1d1b3b861648547c88bfe9"
+    },
+    "arch/arm64/kvm/handle_exit.c": {
+      "base_sha256": "a6bc1b4b07369fb0b2c9f66d6bc94a86051525051fd1dd08657f3044099c6fa3",
+      "patched_sha256": "2ad617993eee1ed1ef96de0b3d837713417f4a67dc9dccdc26c5b0024be55e6e"
+    },
+    "arch/arm64/kvm/hyp/include/nvhe/mem_protect.h": {
+      "base_sha256": "cc32fc0948e4c38271c27a6fc914c277d2afed48ccaa17c7ac2a125601645150",
+      "patched_sha256": "7d9c2f05a390d222751ebeee51a0c83e8e656be2bdf292ac124324674bcfcada"
+    },
+    "arch/arm64/kvm/hyp/nvhe/Makefile": {
+      "base_sha256": "c89fbeda6af1e1ac4e542ed98d19e56fd64369734247869e0b9e5fd68c075247",
+      "patched_sha256": "e64f3c1c94fafd97f4ee7829a35f9d66e580a4571ac20f893e1192c579724c3c"
+    },
+    "arch/arm64/kvm/hyp/nvhe/gz-bridge.c": {
+      "base_sha256": null,
+      "patched_sha256": "e8b043b33cfdce4b2b60a809054d6a9f625689995ce203ebae43f22396156a14"
+    },
+    "arch/arm64/kvm/hyp/nvhe/gz-entry.S": {
+      "base_sha256": null,
+      "patched_sha256": "dd3fb7a15fcf8dd37956c0b8e750e4e0996cd9465016975276ccd93495baf83a"
+    },
+    "arch/arm64/kvm/hyp/nvhe/hyp-main.c": {
+      "base_sha256": "f9244d2ea5d59be29613930033f385ca15e7e0e04054a08ab2168e944877a8e7",
+      "patched_sha256": "9f22647e3460ab2752614cb47c3fc0362eaa9f4294e8b7e60a39bf75757a3c4d"
+    },
+    "arch/arm64/kvm/hyp/nvhe/switch.c": {
+      "base_sha256": "d7d27809a639ca5c45ef80fa83730608a590155800bc5d75ec6df6b6d3b4b60c",
+      "patched_sha256": "79e07d0bd8f974b647858b87342ead0816eed983f3d0cd2672cb908a6b786db1"
+    },
+    "arch/arm64/kvm/hyp/nvhe/tlb.c": {
+      "base_sha256": "03c5906e1315f182c656a6c22aa49505445ed765616724d49c803781277df957",
+      "patched_sha256": "6c642208c0a11de45d2ca1a86bb57db3874026ac16faf2e8e94c11a93d3b2352"
+    },
+    "arch/arm64/kvm/mmu.c": {
+      "base_sha256": "9b3e251371872048f989e27896bc861ca38241d70fe3bb1cdb680627e87da554",
+      "patched_sha256": "3e5e1bbd1bcc440655276ba59cf95a82804d381b7fe7b36e3e58d7d1224a3c55"
+    },
+    "arch/arm64/kvm/sys_regs.c": {
+      "base_sha256": "f181d8238ba48693381d2f774ccca1f5e239b13fc8584dec0e330980ecc8f343",
+      "patched_sha256": "8903bdc40172cba5fc9f27fa865bb6acb6fd3d6219fd08ae826ff719d6a9469a"
+    },
+    "arch/arm64/kvm/va_layout.c": {
+      "base_sha256": "9dc0bc3ded7ff0ba1a8985c8e07834aab4207681a6d37bc347cd9f2487bb7291",
+      "patched_sha256": "defb018af2e751d9cb85ad0fecc4eec3b13b994e3c868853e42f132ab5f24acb"
+    },
+    "drivers/clocksource/arm_arch_timer.c": {
+      "base_sha256": "b5bff4d893494999fcc9b3a3052888b187f5c58488867a94c7a44bd9a80ff7b9",
+      "patched_sha256": "b06d5c48b6db94d60eb81f58182e86e569ffa53015bd5a725b5c6cebfc3b3b19"
+    },
+    "drivers/irqchip/irq-gic-v3.c": {
+      "base_sha256": "7e264caf5c7c8cbe3830f4e9038122f16549e46fe8d5dcc06578f8b2d034d74e",
+      "patched_sha256": "20dbdfecbb5a8d0113832eb41f4743c3e075f722b78d2caff618b51f24c09d80"
+    }
+  },
+  "firmware_abi": {
+    "fid": "0xc600ff10",
+    "magic": "0x475a5054",
+    "version": 1,
+    "va_bits": 36,
+    "required_features": 5
+  },
+  "device_tested": false
+}

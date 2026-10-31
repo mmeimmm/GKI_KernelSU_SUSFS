@@ -1,0 +1,5 @@
+# Preserve the exact bytes of vendored patch context and ABI layout archives.
+*.patch -whitespace
+abi/*.patch -whitespace
+abi/baseline-*.txt -whitespace
+abi/Module.symvers -whitespace

@@ -1,0 +1,1754 @@
+diff --git a/arch/arm64/include/asm/kvm_asm.h b/arch/arm64/include/asm/kvm_asm.h
+--- a/arch/arm64/include/asm/kvm_asm.h
++++ b/arch/arm64/include/asm/kvm_asm.h
+@@ -19,6 +19,8 @@
+ #define ARM_EXCEPTION_EL1_SERROR  1
+ #define ARM_EXCEPTION_TRAP	  2
+ #define ARM_EXCEPTION_IL	  3
++/* GZ transport failure, not an architectural guest exception/SError. */
++#define ARM_EXCEPTION_GZ_ERROR	  4
+ /* The hyp-stub will return this for any kvm_call_hyp() call */
+ #define ARM_EXCEPTION_HYP_GONE	  HVC_STUB_ERR
+ 
+diff --git a/arch/arm64/include/asm/kvm_gz.h b/arch/arm64/include/asm/kvm_gz.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/include/asm/kvm_gz.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __ARM64_KVM_GZ_H__
++#define __ARM64_KVM_GZ_H__
++
++#include <linux/types.h>
++
++#define GZ_PT_FID		0xc600ff10UL
++#define GZ_PT_MAGIC		0x475a5054UL
++#define GZ_PT_QUERY		0
++#define GZ_PT_LAYOUT		1
++#define GZ_PT_MAP		2
++#define GZ_PT_UNMAP		3
++#define GZ_PT_BIND		4
++#define GZ_PT_UNBIND		5
++#define GZ_PT_LINEAR_BASE	0xc00000000UL
++#define GZ_PT_LINEAR_SIZE	0x400000000UL
++#define GZ_PT_PRIVATE_BASE	0xb00000000UL
++#define GZ_PT_PRIVATE_SIZE	0x80000000UL
++#define GZ_PT_R			1
++#define GZ_PT_W			2
++#define GZ_PT_X			4
++#define GZ_PT_DEVICE		8
++#define GZ_PT_SHARED_S1		1
++#define GZ_PT_BRIDGE_BOUND	2
++#define GZ_PT_NATIVE_PIN		4
++
++extern bool gz_shared_stage1;
++static __always_inline bool kvm_gz_enabled(void)
++{
++	return READ_ONCE(gz_shared_stage1);
++}
++
++#ifndef __KVM_NVHE_HYPERVISOR__
++extern bool gz_hvc_failed;
++struct arm_smccc_res;
++void kvm_gz_record_hvc_error(unsigned long fid, const struct arm_smccc_res *res);
++static __always_inline bool kvm_gz_hvc_failed(void)
++{
++	return READ_ONCE(gz_hvc_failed);
++}
++bool __init kvm_gz_probe(void);
++bool __init kvm_gz_layout_valid(u8 tag_lsb);
++int kvm_gz_map(unsigned long va, phys_addr_t pa, unsigned long size,
++	       unsigned int prot);
++int kvm_gz_private_map(phys_addr_t pa, unsigned long size,
++		       unsigned long *va, unsigned int prot);
++int kvm_gz_unmap_all(void);
++int kvm_gz_bind(void);
++int kvm_gz_cpu_init(void);
++int kvm_gz_prepare_cpu(int cpu, unsigned long stack, unsigned long percpu);
++void kvm_gz_free_contexts(void);
++#endif
++#endif
+diff --git a/arch/arm64/include/asm/kvm_gz_context.h b/arch/arm64/include/asm/kvm_gz_context.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/include/asm/kvm_gz_context.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __ARM64_KVM_GZ_CONTEXT_H__
++#define __ARM64_KVM_GZ_CONTEXT_H__
++
++/* Assembly prefix: keep offsets checked against C at build time. */
++#define GZ_CTX_RESULT	104
++#define GZ_CTX_DAIF	112
++#define GZ_CTX_SPSEL	120
++#define GZ_CTX_SP0	128
++#define GZ_CTX_SP1	136
++#define GZ_CTX_TPIDR	144
++#define GZ_CTX_STACK	152
++#define GZ_CTX_PERCPU	160
++#define GZ_CTX_MPIDR	168
++#define GZ_CTX_CONFIGURED 176
++#define GZ_CTX_BUSY	184
++#define GZ_CTX_VBAR	224
++#define GZ_MAX_CPUS	8
++
++#ifndef __ASSEMBLY__
++#include <linux/types.h>
++#include <linux/kvm_host.h>
++
++struct gz_gic_bank {
++	u64 hcr, vmcr, sre, sre_el1, lr[16];
++	struct vgic_v3_cpu_if aprs;
++};
++struct gz_kvm_context {
++	u64 callee[13], result, daif, spsel, sp0, sp1, tpidr;
++	u64 stack, percpu, mpidr, configured, busy;
++	u64 hcr, cptr, hstr, mdcr, vbar, elr, spsr, esr, far, hpfar;
++	u64 vtcr, vttbr, cnthctl, cntvoff, cnthp_ctl, cnthp_cval;
++	u64 zcr, vsesr, fpexc, pmselr, pmuserenr, sctlr;
++	u64 kvm_cntvoff;
++	bool gic_access, sve, ras, aarch32_fp, pmu, gic_switch, timer_switch;
++	bool vcpu_run, gic_direct;
++	struct gz_gic_bank gz_gic, kvm_gic;
++} __aligned(16);
++
++extern struct gz_kvm_context *gz_cpu_contexts[GZ_MAX_CPUS];
++void __gz_restore_host_stage2(void);
++void __gz_restore_host_traps(void);
++void __gz_flush_vm_context(void);
++#endif
++#endif
+diff --git a/arch/arm64/include/asm/kvm_gz_hvc.h b/arch/arm64/include/asm/kvm_gz_hvc.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/include/asm/kvm_gz_hvc.h
+@@ -0,0 +1,36 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __ARM64_KVM_GZ_HVC_H__
++#define __ARM64_KVM_GZ_HVC_H__
++
++#include <linux/arm-smccc.h>
++#include <asm/kvm_gz.h>
++#include <asm/processor.h>
++
++static __always_inline void __kvm_gz_hvc(const unsigned long args[8],
++				       struct arm_smccc_res *res)
++{
++	/* Probe requires the independently pinned native service. Mapping work
++	 * cannot make this call busy; errors must be reported, never replayed. */
++	arm_smccc_1_1_hvc(args[0], args[1], args[2], args[3],
++			  args[4], args[5], args[6], args[7], res);
++}
++
++/* Capture every argument once, including pointer and side-effect expressions. */
++#define __gz_args_0(...)
++#define __gz_args_1(a) (unsigned long)(a)
++#define __gz_args_2(a, ...) (unsigned long)(a), __gz_args_1(__VA_ARGS__)
++#define __gz_args_3(a, ...) (unsigned long)(a), __gz_args_2(__VA_ARGS__)
++#define __gz_args_4(a, ...) (unsigned long)(a), __gz_args_3(__VA_ARGS__)
++#define __gz_args_5(a, ...) (unsigned long)(a), __gz_args_4(__VA_ARGS__)
++#define __gz_args_6(a, ...) (unsigned long)(a), __gz_args_5(__VA_ARGS__)
++#define __gz_args_7(a, ...) (unsigned long)(a), __gz_args_6(__VA_ARGS__)
++#define ___gz_args(count, ...) __gz_args_ ## count(__VA_ARGS__)
++#define __gz_args(count, ...) ___gz_args(count, __VA_ARGS__)
++#define kvm_gz_hvc(res, fid, ...) \
++	do { \
++		const unsigned long __gz_call_args[8] = { (u32)(fid), \
++			__gz_args(__count_args(fid, ##__VA_ARGS__, res), ##__VA_ARGS__) }; \
++		__kvm_gz_hvc(__gz_call_args, res); \
++	} while (0)
++
++#endif
+diff --git a/arch/arm64/include/asm/kvm_host.h b/arch/arm64/include/asm/kvm_host.h
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -601,13 +601,33 @@
+ void kvm_arm_resume_guest(struct kvm *kvm);
+ 
+ #ifndef __KVM_NVHE_HYPERVISOR__
++#include <asm/kvm_gz_hvc.h>
++
+ #define kvm_call_hyp_nvhe(f, ...)						\
+ 	({								\
+ 		struct arm_smccc_res res;				\
+ 									\
+-		arm_smccc_1_1_hvc(KVM_HOST_SMCCC_FUNC(f),		\
+-				  ##__VA_ARGS__, &res);			\
+-		WARN_ON(res.a0 != SMCCC_RET_SUCCESS);			\
++		if (unlikely(kvm_gz_enabled())) {			\
++			if (KVM_HOST_SMCCC_FUNC(f) ==			\
++			    KVM_HOST_SMCCC_FUNC(__kvm_vcpu_run) &&		\
++			    kvm_gz_hvc_failed()) {				\
++				res.a1 = ARM_EXCEPTION_GZ_ERROR;		\
++			} else {						\
++				kvm_gz_hvc(&res, KVM_HOST_SMCCC_FUNC(f),	\
++					   ##__VA_ARGS__);		\
++				if (res.a0 != SMCCC_RET_SUCCESS) {	\
++					kvm_gz_record_hvc_error(		\
++						KVM_HOST_SMCCC_FUNC(f), &res); \
++					res.a1 = KVM_HOST_SMCCC_FUNC(f) == \
++						KVM_HOST_SMCCC_FUNC(__kvm_vcpu_run) \
++						? ARM_EXCEPTION_GZ_ERROR : 0; \
++				}					\
++			}						\
++		} else {						\
++			arm_smccc_1_1_hvc(KVM_HOST_SMCCC_FUNC(f),		\
++					  ##__VA_ARGS__, &res);		\
++			WARN_ON(res.a0 != SMCCC_RET_SUCCESS);		\
++		}							\
+ 									\
+ 		res.a1;							\
+ 	})
+diff --git a/arch/arm64/include/asm/kvm_mmu.h b/arch/arm64/include/asm/kvm_mmu.h
+--- a/arch/arm64/include/asm/kvm_mmu.h
++++ b/arch/arm64/include/asm/kvm_mmu.h
+@@ -146,6 +146,7 @@
+ #define kvm_phys_mask(kvm)		(kvm_phys_size(kvm) - _AC(1, ULL))
+ 
+ #include <asm/kvm_pgtable.h>
++#include <asm/kvm_gz.h>
+ #include <asm/stage2_pgtable.h>
+ 
+ int create_hyp_mappings(void *from, void *to, enum kvm_pgtable_prot prot);
+@@ -222,6 +223,8 @@
+ static inline unsigned int kvm_get_vmid_bits(void)
+ {
+ 	int reg = read_sanitised_ftr_reg(SYS_ID_AA64MMFR1_EL1);
++	if (kvm_gz_enabled())
++		return 8;
+ 
+ 	return get_vmid_bits(reg);
+ }
+@@ -262,7 +265,7 @@
+ 	u64 cnp = system_supports_cnp() ? VTTBR_CNP_BIT : 0;
+ 
+ 	baddr = mmu->pgd_phys;
+-	vmid_field = (u64)vmid->vmid << VTTBR_VMID_SHIFT;
++	vmid_field = ((u64)vmid->vmid + (kvm_gz_enabled() ? 256 : 0)) << VTTBR_VMID_SHIFT;
+ 	return kvm_phys_to_vttbr(baddr) | vmid_field | cnp;
+ }
+ 
+@@ -272,6 +275,8 @@
+  */
+ static __always_inline void __load_stage2(struct kvm_s2_mmu *mmu, unsigned long vtcr)
+ {
++	if (kvm_gz_enabled())
++		vtcr |= VTCR_EL2_VS_16BIT;
+ 	write_sysreg(vtcr, vtcr_el2);
+ 	write_sysreg(kvm_get_vttbr(mmu), vttbr_el2);
+ 
+diff --git a/arch/arm64/kvm/Makefile b/arch/arm64/kvm/Makefile
+--- a/arch/arm64/kvm/Makefile
++++ b/arch/arm64/kvm/Makefile
+@@ -12,7 +12,7 @@
+ 
+ kvm-y := $(KVM)/kvm_main.o $(KVM)/coalesced_mmio.o $(KVM)/eventfd.o \
+ 	 $(KVM)/vfio.o $(KVM)/irqchip.o \
+-	 arm.o mmu.o mmio.o psci.o perf.o hypercalls.o pvtime.o \
++	 arm.o mmu.o gz.o mmio.o psci.o perf.o hypercalls.o pvtime.o \
+ 	 inject_fault.o va_layout.o handle_exit.o \
+ 	 guest.o debug.o reset.o sys_regs.o \
+ 	 vgic-sys-reg-v3.o fpsimd.o pmu.o \
+diff --git a/arch/arm64/kvm/arch_timer.c b/arch/arm64/kvm/arch_timer.c
+--- a/arch/arm64/kvm/arch_timer.c
++++ b/arch/arm64/kvm/arch_timer.c
+@@ -14,6 +14,7 @@
+ #include <clocksource/arm_arch_timer.h>
+ #include <asm/arch_timer.h>
+ #include <asm/kvm_emulate.h>
++#include <asm/kvm_gz.h>
+ #include <asm/kvm_hyp.h>
+ 
+ #include <kvm/arm_vgic.h>
+@@ -26,6 +27,11 @@
+ static unsigned int host_ptimer_irq;
+ static u32 host_vtimer_irq_flags;
+ static u32 host_ptimer_irq_flags;
++
++/* GZ keeps the host virtual counter offset installed outside guest entry.
++ * A loaded guest comparator therefore uses host counter coordinates there.
++ */
++static DEFINE_PER_CPU(u64, gz_vtimer_cval_delta);
+ 
+ static DEFINE_STATIC_KEY_FALSE(has_gic_active_state);
+ 
+@@ -438,7 +444,8 @@
+ 	switch (index) {
+ 	case TIMER_VTIMER:
+ 		timer_set_ctl(ctx, read_sysreg_el0(SYS_CNTV_CTL));
+-		timer_set_cval(ctx, read_sysreg_el0(SYS_CNTV_CVAL));
++		timer_set_cval(ctx, read_sysreg_el0(SYS_CNTV_CVAL) -
++			       (kvm_gz_enabled() ? this_cpu_read(gz_vtimer_cval_delta) : 0));
+ 
+ 		/* Disable the timer */
+ 		write_sysreg_el0(0, SYS_CNTV_CTL);
+@@ -516,7 +523,9 @@
+ 
+ 	switch (index) {
+ 	case TIMER_VTIMER:
+-		write_sysreg_el0(timer_get_cval(ctx), SYS_CNTV_CVAL);
++		write_sysreg_el0(timer_get_cval(ctx) +
++				(kvm_gz_enabled() ? this_cpu_read(gz_vtimer_cval_delta) : 0),
++				SYS_CNTV_CVAL);
+ 		isb();
+ 		write_sysreg_el0(timer_get_ctl(ctx), SYS_CNTV_CTL);
+ 		break;
+@@ -538,7 +547,16 @@
+ 
+ static void set_cntvoff(u64 cntvoff)
+ {
+-	kvm_call_hyp(__kvm_timer_set_cntvoff, cntvoff);
++	if (unlikely(kvm_gz_enabled())) {
++		/* The GZ control call returns its retained host CNTVOFF. Both
++		 * the host and guest may have nonzero offsets; do not assume zero.
++		 */
++		u64 host_offset = kvm_call_hyp_nvhe(__kvm_timer_set_cntvoff, cntvoff);
++
++		this_cpu_write(gz_vtimer_cval_delta, cntvoff - host_offset);
++	} else {
++		kvm_call_hyp(__kvm_timer_set_cntvoff, cntvoff);
++	}
+ }
+ 
+ static inline void set_timer_irq_phys_active(struct arch_timer_context *ctx, bool active)
+diff --git a/arch/arm64/kvm/arm.c b/arch/arm64/kvm/arm.c
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -38,6 +38,7 @@
+ #include <asm/kvm_mmu.h>
+ #include <asm/kvm_emulate.h>
+ #include <asm/sections.h>
++#include <asm/kvm_gz.h>
+ 
+ #include <kvm/arm_hypercalls.h>
+ #include <kvm/arm_pmu.h>
+@@ -64,6 +65,7 @@
+ static bool vgic_present;
+ 
+ static DEFINE_PER_CPU(unsigned char, kvm_arm_hardware_enabled);
++static DEFINE_PER_CPU(int, kvm_gz_cpu_error);
+ DEFINE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
+ 
+ int kvm_arch_vcpu_should_kick(struct kvm_vcpu *vcpu)
+@@ -906,6 +908,8 @@
+ 	kvm_sigset_deactivate(vcpu);
+ 
+ 	vcpu_put(vcpu);
++	if (unlikely(kvm_gz_enabled() && kvm_gz_hvc_failed()))
++		return -EIO;
+ 	return ret;
+ }
+ 
+@@ -1414,6 +1418,10 @@
+ 	 */
+ 	params->tpidr_el2 = (unsigned long)kasan_reset_tag(per_cpu_ptr_nvhe_sym(__per_cpu_start, cpu)) -
+ 			    (unsigned long)kvm_ksym_ref(CHOOSE_NVHE_SYM(__per_cpu_start));
++	if (kvm_gz_enabled()) {
++		params->stack_hyp_va = kern_hyp_va(per_cpu(kvm_arm_hyp_stack_page, cpu) + PAGE_SIZE);
++		return;
++	}
+ 
+ 	params->mair_el2 = read_sysreg(mair_el1);
+ 
+@@ -1473,7 +1481,8 @@
+ 
+ static void cpu_init_hyp_mode(void)
+ {
+-	hyp_install_host_vector();
++	if (!kvm_gz_enabled())
++		hyp_install_host_vector();
+ 
+ 	/*
+ 	 * Disabling SSBD on a non-VHE system requires us to enable SSBS
+@@ -1487,6 +1496,8 @@
+ 
+ static void cpu_hyp_reset(void)
+ {
++	if (kvm_gz_enabled())
++		return;
+ 	if (!is_kernel_in_hyp_mode())
+ 		__hyp_reset_vectors();
+ }
+@@ -1522,8 +1533,14 @@
+ 		kvm_call_hyp_nvhe(__pkvm_cpu_set_vector, data->slot);
+ }
+ 
+-static void cpu_hyp_reinit(void)
+-{
++static int cpu_hyp_reinit(void)
++{
++	if (kvm_gz_enabled()) {
++		int rc = kvm_gz_cpu_init();
++		__this_cpu_write(kvm_gz_cpu_error, rc);
++		if (rc)
++			return rc;
++	}
+ 	kvm_init_host_cpu_context(&this_cpu_ptr_hyp_sym(kvm_host_data)->host_ctxt);
+ 
+ 	cpu_hyp_reset();
+@@ -1539,12 +1556,14 @@
+ 
+ 	if (vgic_present)
+ 		kvm_vgic_init_cpu_hardware();
++	return 0;
+ }
+ 
+ static void _kvm_arch_hardware_enable(void *discard)
+ {
+ 	if (!__this_cpu_read(kvm_arm_hardware_enabled)) {
+-		cpu_hyp_reinit();
++		if (cpu_hyp_reinit())
++			return;
+ 		__this_cpu_write(kvm_arm_hardware_enabled, 1);
+ 	}
+ }
+@@ -1552,7 +1571,7 @@
+ int kvm_arch_hardware_enable(void)
+ {
+ 	_kvm_arch_hardware_enable(NULL);
+-	return 0;
++	return __this_cpu_read(kvm_gz_cpu_error);
+ }
+ 
+ static void _kvm_arch_hardware_disable(void *discard)
+@@ -1674,11 +1693,19 @@
+ static int init_subsystems(void)
+ {
+ 	int err = 0;
++	int cpu;
+ 
+ 	/*
+ 	 * Enable hardware so that subsystem initialisation can access EL2.
+ 	 */
+ 	on_each_cpu(_kvm_arch_hardware_enable, NULL, 1);
++	if (kvm_gz_enabled()) {
++		for_each_online_cpu(cpu) {
++			err = per_cpu(kvm_gz_cpu_error, cpu);
++			if (err)
++				goto out;
++		}
++	}
+ 
+ 	/*
+ 	 * Register CPU lower-power notifier
+@@ -1695,6 +1722,11 @@
+ 		break;
+ 	case -ENODEV:
+ 	case -ENXIO:
++		if (kvm_gz_enabled()) {
++			kvm_err("GZ shared mode requires a working in-kernel VGIC (%d)\n",
++				err);
++			goto out;
++		}
+ 		vgic_present = false;
+ 		err = 0;
+ 		break;
+@@ -1722,6 +1754,11 @@
+ static void teardown_hyp_mode(void)
+ {
+ 	int cpu;
++	if (kvm_gz_enabled()) {
++		if (WARN_ON(kvm_gz_unmap_all()))
++			return;
++		kvm_gz_free_contexts();
++	}
+ 
+ 	free_hyp_pgds();
+ 	for_each_possible_cpu(cpu) {
+@@ -1892,6 +1929,17 @@
+ 
+ 		/* Prepare the CPU initialization parameters */
+ 		cpu_prepare_hyp_mode(cpu);
++		if (kvm_gz_enabled()) {
++			struct kvm_nvhe_init_params *p = per_cpu_ptr_nvhe_sym(kvm_init_params, cpu);
++			err = kvm_gz_prepare_cpu(cpu, p->stack_hyp_va, p->tpidr_el2);
++			if (err)
++				goto out_err;
++		}
++	}
++	if (kvm_gz_enabled()) {
++		err = kvm_gz_bind();
++		if (err)
++			goto out_err;
+ 	}
+ 
+ 	if (is_protected_kvm_enabled()) {
+@@ -2058,7 +2106,7 @@
+ 	int ret, cpu;
+ 	bool in_hyp_mode;
+ 
+-	if (!is_hyp_mode_available()) {
++	if (!is_hyp_mode_available() && !kvm_gz_enabled()) {
+ 		kvm_info("HYP mode not available\n");
+ 		return -ENODEV;
+ 	}
+@@ -2067,6 +2115,8 @@
+ 		kvm_info("KVM disabled from command line\n");
+ 		return -ENODEV;
+ 	}
++	if (kvm_gz_enabled() && is_protected_kvm_enabled())
++		return -EOPNOTSUPP;
+ 
+ 	in_hyp_mode = is_kernel_in_hyp_mode();
+ 
+@@ -2150,7 +2200,7 @@
+ 		return 0;
+ 	}
+ 
+-	if (!is_hyp_mode_available()) {
++	if (!is_hyp_mode_available() && !kvm_gz_probe()) {
+ 		pr_warn_once("KVM is not available. Ignoring kvm-arm.mode\n");
+ 		return 0;
+ 	}
+diff --git a/arch/arm64/kvm/fpsimd.c b/arch/arm64/kvm/fpsimd.c
+--- a/arch/arm64/kvm/fpsimd.c
++++ b/arch/arm64/kvm/fpsimd.c
+@@ -12,6 +12,7 @@
+ #include <asm/fpsimd.h>
+ #include <asm/kvm_asm.h>
+ #include <asm/kvm_hyp.h>
++#include <asm/kvm_gz_context.h>
+ #include <asm/kvm_mmu.h>
+ #include <asm/sysreg.h>
+ 
+@@ -97,6 +98,18 @@
+ 	WARN_ON_ONCE(!irqs_disabled());
+ 
+ 	if (vcpu->arch.flags & KVM_ARM64_FP_ENABLED) {
++		if (kvm_gz_enabled()) {
++			/* nVHE saved the guest before returning through GZ. The
++			 * physical bank may now contain host state: discard its
++			 * ownership without saving it over the guest's good copy.
++			 * The next entry must restore from memory on its FP trap.
++			 */
++			set_thread_flag(TIF_FOREIGN_FPSTATE);
++			fpsimd_save_and_flush_cpu_state();
++			vcpu->arch.flags &= ~KVM_ARM64_FP_ENABLED;
++			return;
++		}
++
+ 		fpsimd_bind_state_to_cpu(&vcpu->arch.ctxt.fp_regs,
+ 					 vcpu->arch.sve_state,
+ 					 vcpu->arch.sve_max_vl);
+diff --git a/arch/arm64/kvm/gz.c b/arch/arm64/kvm/gz.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kvm/gz.c
+@@ -0,0 +1,254 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Host mapping client for GZ's existing EL2 translation tables. */
++#include <linux/arm-smccc.h>
++#include <linux/init.h>
++#include <linux/kvm_host.h>
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <asm/kvm_gz.h>
++#include <asm/kvm_gz_context.h>
++#include <asm/kvm_pgtable.h>
++#include <asm/kvm_mmu.h>
++#include <asm/smp_plat.h>
++#include <asm/virt.h>
++
++bool gz_shared_stage1;
++bool gz_hvc_failed;
++
++void kvm_gz_record_hvc_error(unsigned long fid, const struct arm_smccc_res *res)
++{
++	/* Lost timer/GIC/TLB updates cannot be ignored. Stop further guest
++	 * entries on every CPU; cleanup calls may still restore host state. */
++	WRITE_ONCE(gz_hvc_failed, true);
++	pr_err_ratelimited("KVM: GZ HVC %#lx failed (%ld,%#lx,%#lx,%#lx); guest entry disabled\n",
++		fid, (long)res->a0, res->a1, res->a2, res->a3);
++}
++static bool gz_probed;
++static bool gz_requested;
++static DEFINE_MUTEX(gz_map_lock);
++static LIST_HEAD(gz_mappings);
++static unsigned long gz_private_next = GZ_PT_PRIVATE_BASE;
++static struct gz_kvm_context *gz_host_contexts[GZ_MAX_CPUS];
++extern bool kvm_nvhe_sym(gz_shared_stage1);
++extern struct gz_kvm_context *kvm_nvhe_sym(gz_cpu_contexts)[GZ_MAX_CPUS];
++struct gz_mapping {
++	struct list_head list;
++	unsigned long va, size;
++	phys_addr_t pa;
++	unsigned int prot;
++};
++
++static int __init gz_mode_cfg(char *arg)
++{
++	if (!arg || strcmp(arg, "shared"))
++		return -EINVAL;
++	gz_requested = true;
++	return 0;
++}
++early_param("kvm-arm.gz", gz_mode_cfg);
++
++static void gz_call(unsigned long cmd, unsigned long va, phys_addr_t pa,
++		    unsigned long size, unsigned long prot, struct arm_smccc_res *res)
++{
++	arm_smccc_1_1_hvc(GZ_PT_FID, GZ_PT_MAGIC, cmd, va, pa, size, prot, 0, res);
++}
++
++bool __init kvm_gz_probe(void)
++{
++	struct arm_smccc_res res;
++	if (!gz_requested)
++		return false;
++	if (gz_probed)
++		return kvm_gz_enabled();
++	gz_probed = true;
++	if (is_kernel_in_hyp_mode())
++		return false;
++	gz_call(GZ_PT_QUERY, 0, 0, 0, 0, &res);
++	if (res.a0 != GZ_PT_MAGIC || res.a1 != 1 || res.a2 != 36 ||
++	    (res.a3 & (GZ_PT_SHARED_S1 | GZ_PT_NATIVE_PIN)) !=
++			(GZ_PT_SHARED_S1 | GZ_PT_NATIVE_PIN) ||
++	    (res.a3 & GZ_PT_BRIDGE_BOUND))
++		return false;
++	gz_call(GZ_PT_LAYOUT, 0, 0, 0, 0, &res);
++	if (res.a0 || res.a1 != GZ_PT_LINEAR_BASE ||
++	    res.a2 != GZ_PT_LINEAR_SIZE || res.a3 != GZ_PT_PRIVATE_BASE)
++		return false;
++	gz_shared_stage1 = true;
++	return true;
++}
++
++bool __init kvm_gz_layout_valid(u8 tag_lsb)
++{
++	/* The linear conversion must be injective over all host DRAM. */
++	if (!kvm_gz_probe())
++		return false;
++	if (!tag_lsb || tag_lsb > 34) {
++		gz_shared_stage1 = false;
++		pr_err("KVM: host linear span does not fit the GZ EL2 window\n");
++		return false;
++	}
++	return true;
++}
++
++static unsigned int gz_protection(unsigned int prot)
++{
++	return ((prot & KVM_PGTABLE_PROT_R) ? GZ_PT_R : 0) |
++	       ((prot & KVM_PGTABLE_PROT_W) ? GZ_PT_W : 0) |
++	       ((prot & KVM_PGTABLE_PROT_X) ? GZ_PT_X : 0) |
++	       ((prot & KVM_PGTABLE_PROT_DEVICE) ? GZ_PT_DEVICE : 0);
++}
++
++/* Caller serializes mappings. Record only successfully installed regions. */
++static int gz_map_locked(unsigned long va, phys_addr_t pa, unsigned long size,
++			 unsigned int prot)
++{
++	struct arm_smccc_res res;
++	struct gz_mapping *m;
++	unsigned int perms = gz_protection(prot);
++	if (!size || ((va | pa | size) & ~PAGE_MASK))
++		return -EINVAL;
++	while (size) {
++		unsigned long skip = 0, chunk = min_t(unsigned long, size, SZ_64M);
++		/* Reuse matching existing fragments and map only the uncovered
++		 * intervals. This handles full rodata mappings after hyp rodata. */
++		list_for_each_entry(m, &gz_mappings, list) {
++			if (va >= m->va && va - m->va < m->size) {
++				if (pa != m->pa + va - m->va || perms != m->prot)
++					return -EEXIST;
++				skip = min(size, m->size - (va - m->va));
++				break;
++			}
++			if (m->va > va)
++				chunk = min(chunk, m->va - va);
++		}
++		if (skip) {
++			va += skip; pa += skip; size -= skip;
++			continue;
++		}
++		m = kzalloc(sizeof(*m), GFP_KERNEL);
++		if (!m)
++			return -ENOMEM;
++		gz_call(GZ_PT_MAP, va, pa, chunk, perms, &res);
++		if (res.a0 || res.a1 != va) {
++			kfree(m);
++			return res.a0 ? (long)res.a0 : -EIO;
++		}
++		m->va = va; m->pa = pa; m->size = chunk; m->prot = perms;
++		list_add_tail(&m->list, &gz_mappings);
++		va += chunk; pa += chunk; size -= chunk;
++	}
++	return 0;
++}
++
++int kvm_gz_map(unsigned long va, phys_addr_t pa, unsigned long size, unsigned int prot)
++{
++	int rc;
++	mutex_lock(&gz_map_lock);
++	rc = gz_map_locked(va, pa, size, prot);
++	mutex_unlock(&gz_map_lock);
++	return rc;
++}
++
++int kvm_gz_private_map(phys_addr_t pa, unsigned long size,
++		       unsigned long *va, unsigned int prot)
++{
++	unsigned long offset = offset_in_page(pa), base;
++	int rc;
++	if (!size || size > GZ_PT_PRIVATE_SIZE - offset)
++		return -EINVAL;
++	size = PAGE_ALIGN(size + offset);
++	mutex_lock(&gz_map_lock);
++	base = gz_private_next;
++	if (size > GZ_PT_PRIVATE_BASE + GZ_PT_PRIVATE_SIZE - base)
++		rc = -ENOMEM;
++	else {
++		rc = gz_map_locked(base, pa & PAGE_MASK, size, prot);
++		/* Reserve the address even on partial failure, so no stale
++		 * translation can be handed to an unrelated allocation. */
++		gz_private_next += size;
++		if (!rc)
++			*va = base + offset;
++	}
++	mutex_unlock(&gz_map_lock);
++	return rc;
++}
++
++int kvm_gz_bind(void)
++{
++	struct arm_smccc_res res;
++	extern char kvm_nvhe_sym(__gz_kvm_entry)[];
++	kvm_nvhe_sym(gz_shared_stage1) = true;
++	gz_call(GZ_PT_BIND, kern_hyp_va((unsigned long)kvm_ksym_ref(kvm_nvhe_sym(__gz_kvm_entry))), 0, 0, 0, &res);
++	return (long)res.a0;
++}
++
++int kvm_gz_prepare_cpu(int cpu, unsigned long stack, unsigned long percpu)
++{
++	u64 mpidr = cpu_logical_map(cpu);
++	unsigned int index = (mpidr >> 8) & 255;
++	struct gz_kvm_context *s;
++	unsigned int order = get_order(sizeof(*s));
++	int rc;
++	if (index >= GZ_MAX_CPUS || gz_host_contexts[index])
++		return -EINVAL;
++	s = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO, order);
++	if (!s)
++		return -ENOMEM;
++	gz_host_contexts[index] = s;
++	s->stack = stack;
++	s->percpu = percpu;
++	s->mpidr = mpidr;
++	s->configured = 1;
++	rc = create_hyp_mappings(s, (char *)s + (PAGE_SIZE << order), PAGE_HYP);
++	if (rc)
++		return rc;
++	kvm_nvhe_sym(gz_cpu_contexts)[index] = kern_hyp_va(s);
++	return 0;
++}
++
++void kvm_gz_free_contexts(void)
++{
++	unsigned int i;
++	for (i = 0; i < GZ_MAX_CPUS; i++) {
++		if (gz_host_contexts[i])
++			free_pages((unsigned long)gz_host_contexts[i], get_order(sizeof(struct gz_kvm_context)));
++		gz_host_contexts[i] = NULL;
++	}
++}
++
++int kvm_gz_cpu_init(void)
++{
++	struct arm_smccc_res res;
++	if (kvm_gz_hvc_failed())
++		return -EIO;
++	kvm_gz_hvc(&res, 0xc6000000UL, GZ_PT_MAGIC, 1, 0, 0, 0, 0, 0);
++	if (res.a0 || res.a1 != GZ_PT_MAGIC || res.a2 != 1 || res.a3)
++		return -ENODEV;
++	return 0;
++}
++
++int kvm_gz_unmap_all(void)
++{
++	struct arm_smccc_res res;
++	struct gz_mapping *m, *next;
++	int rc = 0;
++	mutex_lock(&gz_map_lock);
++	gz_call(GZ_PT_UNBIND, 0, 0, 0, 0, &res);
++	if (res.a0) {
++		rc = (long)res.a0;
++		goto out;
++	}
++	list_for_each_entry_safe(m, next, &gz_mappings, list) {
++		gz_call(GZ_PT_UNMAP, m->va, 0, m->size, 0, &res);
++		if (res.a0) {
++			rc = (long)res.a0;
++			break;
++		}
++		list_del(&m->list);
++		kfree(m);
++	}
++out:
++	mutex_unlock(&gz_map_lock);
++	return rc;
++}
+diff --git a/arch/arm64/kvm/handle_exit.c b/arch/arm64/kvm/handle_exit.c
+--- a/arch/arm64/kvm/handle_exit.c
++++ b/arch/arm64/kvm/handle_exit.c
+@@ -251,6 +251,11 @@
+ 	exception_index = ARM_EXCEPTION_CODE(exception_index);
+ 
+ 	switch (exception_index) {
++	case ARM_EXCEPTION_GZ_ERROR:
++		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
++		run->internal.suberror = KVM_INTERNAL_ERROR_UNEXPECTED_EXIT_REASON;
++		run->internal.ndata = 0;
++		return -EIO;
+ 	case ARM_EXCEPTION_IRQ:
+ 		return 1;
+ 	case ARM_EXCEPTION_EL1_SERROR:
+diff --git a/arch/arm64/kvm/hyp/include/nvhe/mem_protect.h b/arch/arm64/kvm/hyp/include/nvhe/mem_protect.h
+--- a/arch/arm64/kvm/hyp/include/nvhe/mem_protect.h
++++ b/arch/arm64/kvm/hyp/include/nvhe/mem_protect.h
+@@ -11,6 +11,8 @@
+ #include <asm/kvm_pgtable.h>
+ #include <asm/virt.h>
+ #include <nvhe/spinlock.h>
++#include <asm/kvm_gz.h>
++#include <asm/kvm_gz_context.h>
+ 
+ struct host_kvm {
+ 	struct kvm_arch arch;
+@@ -28,6 +30,10 @@
+ 
+ static __always_inline void __load_host_stage2(void)
+ {
++	if (kvm_gz_enabled()) {
++		__gz_restore_host_stage2();
++		return;
++	}
+ 	if (static_branch_likely(&kvm_protected_mode_initialized))
+ 		__load_stage2(&host_kvm.arch.mmu, host_kvm.arch.vtcr);
+ 	else
+diff --git a/arch/arm64/kvm/hyp/nvhe/Makefile b/arch/arm64/kvm/hyp/nvhe/Makefile
+--- a/arch/arm64/kvm/hyp/nvhe/Makefile
++++ b/arch/arm64/kvm/hyp/nvhe/Makefile
+@@ -14,7 +14,7 @@
+ 
+ obj-y := timer-sr.o sysreg-sr.o debug-sr.o switch.o tlb.o hyp-init.o host.o \
+ 	 hyp-main.o hyp-smp.o psci-relay.o early_alloc.o stub.o page_alloc.o \
+-	 cache.o setup.o mm.o mem_protect.o
++	 cache.o setup.o mm.o mem_protect.o gz-entry.o gz-bridge.o
+ obj-y += ../vgic-v3-sr.o ../aarch32.o ../vgic-v2-cpuif-proxy.o ../entry.o \
+ 	 ../fpsimd.o ../hyp-entry.o ../exception.o ../pgtable.o
+ obj-y += $(lib-objs)
+diff --git a/arch/arm64/kvm/hyp/nvhe/gz-bridge.c b/arch/arm64/kvm/hyp/nvhe/gz-bridge.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kvm/hyp/nvhe/gz-bridge.c
+@@ -0,0 +1,357 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Run the native KVM backend as a bounded GZ EL2 function call. */
++#include <linux/arm-smccc.h>
++#include <linux/build_bug.h>
++#include <linux/irqchip/arm-gic-v3.h>
++#include <clocksource/arm_arch_timer.h>
++#include <asm/kvm_gz.h>
++#include <asm/kvm_gz_context.h>
++#include <asm/kvm_hyp.h>
++#include <asm/kvm_emulate.h>
++#include <asm/kvm_mmu.h>
++#include <asm/sysreg.h>
++#include <asm/tlbflush.h>
++#include <nvhe/trap_handler.h>
++
++bool gz_shared_stage1;
++struct gz_kvm_context *gz_cpu_contexts[GZ_MAX_CPUS];
++void __gz_handle_host_hcall(struct kvm_cpu_context *);
++
++static struct gz_kvm_context *current_context(void)
++{
++	u64 index = (read_sysreg(mpidr_el1) >> 8) & 255;
++	return gz_cpu_contexts[index]; /* Entry validated full MPIDR and index. */
++}
++
++static u64 get_lr(unsigned int index)
++{
++	switch (index) {
++#define LR_CASE(n) case n: return read_gicreg(ICH_LR##n##_EL2)
++	LR_CASE(0); LR_CASE(1); LR_CASE(2); LR_CASE(3);
++	LR_CASE(4); LR_CASE(5); LR_CASE(6); LR_CASE(7);
++	LR_CASE(8); LR_CASE(9); LR_CASE(10); LR_CASE(11);
++	LR_CASE(12); LR_CASE(13); LR_CASE(14); LR_CASE(15);
++#undef LR_CASE
++	}
++	return 0;
++}
++
++static void set_lr(unsigned int index, u64 value)
++{
++	switch (index) {
++#define LR_CASE(n) case n: write_gicreg(value, ICH_LR##n##_EL2); break
++	LR_CASE(0); LR_CASE(1); LR_CASE(2); LR_CASE(3);
++	LR_CASE(4); LR_CASE(5); LR_CASE(6); LR_CASE(7);
++	LR_CASE(8); LR_CASE(9); LR_CASE(10); LR_CASE(11);
++	LR_CASE(12); LR_CASE(13); LR_CASE(14); LR_CASE(15);
++#undef LR_CASE
++	}
++}
++
++static void save_gic(struct gz_gic_bank *bank)
++{
++	unsigned int i, count = (read_gicreg(ICH_VTR_EL2) & 15) + 1;
++	bank->sre = read_gicreg(ICC_SRE_EL2);
++	bank->sre_el1 = read_gicreg(ICC_SRE_EL1);
++	bank->hcr = read_gicreg(ICH_HCR_EL2);
++	bank->vmcr = read_gicreg(ICH_VMCR_EL2);
++	__vgic_v3_save_aprs(&bank->aprs); /* Gates optional APRs with ICH_VTR. */
++	for (i = 0; i < count; i++)
++		bank->lr[i] = get_lr(i);
++}
++
++static void restore_gic(struct gz_gic_bank *bank)
++{
++	unsigned int i, count = (read_gicreg(ICH_VTR_EL2) & 15) + 1;
++	write_gicreg(0, ICH_HCR_EL2);
++	write_gicreg(bank->sre, ICC_SRE_EL2);
++	isb();
++	write_gicreg(bank->sre_el1, ICC_SRE_EL1);
++	isb();
++	write_gicreg(bank->vmcr, ICH_VMCR_EL2);
++	__vgic_v3_restore_aprs(&bank->aprs);
++	for (i = 0; i < count; i++)
++		set_lr(i, bank->lr[i]);
++	write_gicreg(bank->hcr, ICH_HCR_EL2);
++	isb();
++}
++
++/* Keep CVAL - CNTVCT unchanged when switching counter coordinates. Native
++ * KVM inspects loaded CNTV_CTL.ISTATUS at EL1, where GZ retains host CNTVOFF.
++ * Mask the timer across both writes so an intermediate expired comparator
++ * cannot leave a false pending interrupt in the physical GIC.
++ */
++static void switch_vtimer_offset(u64 offset)
++{
++	u64 previous = read_sysreg(cntvoff_el2);
++	u64 ctl = read_sysreg(cntv_ctl_el0);
++	u64 cval = read_sysreg(cntv_cval_el0);
++
++	write_sysreg(0, cntv_ctl_el0);
++	isb();
++	write_sysreg(offset, cntvoff_el2);
++	write_sysreg(cval + previous - offset, cntv_cval_el0);
++	isb();
++	write_sysreg(ctl, cntv_ctl_el0);
++	isb();
++}
++
++void __gz_save_system(struct gz_kvm_context *s, unsigned long fid)
++{
++	u64 pfr0 = read_sysreg(id_aa64pfr0_el1);
++	u64 dfr0 = read_sysreg(id_aa64dfr0_el1);
++	unsigned long id = fid - 0xc6000000UL;
++	BUILD_BUG_ON(offsetof(struct gz_kvm_context, result) != GZ_CTX_RESULT);
++	BUILD_BUG_ON(offsetof(struct gz_kvm_context, busy) != GZ_CTX_BUSY);
++	BUILD_BUG_ON(offsetof(struct gz_kvm_context, vbar) != GZ_CTX_VBAR);
++#define SAVE(reg) s->reg = read_sysreg(reg##_el2)
++	SAVE(hcr); SAVE(cptr); SAVE(hstr); SAVE(mdcr); SAVE(vbar);
++	SAVE(elr); SAVE(spsr); SAVE(esr); SAVE(far); SAVE(hpfar);
++	SAVE(vtcr); SAVE(vttbr); SAVE(cnthctl); SAVE(cntvoff); SAVE(sctlr);
++	SAVE(cnthp_ctl); SAVE(cnthp_cval);
++#undef SAVE
++	s->sve = ((pfr0 >> 32) & 15) == 1;
++	s->ras = ((pfr0 >> 28) & 15) >= 1 && ((pfr0 >> 28) & 15) < 15;
++	s->aarch32_fp = ((pfr0 >> 4) & 15) == 2 && ((pfr0 >> 16) & 15) != 15;
++	s->pmu = ((dfr0 >> 8) & 15) >= 1 && ((dfr0 >> 8) & 15) < 15;
++	if (s->sve) s->zcr = read_sysreg_s(SYS_ZCR_EL2);
++	if (s->ras) s->vsesr = read_sysreg_s(SYS_VSESR_EL2);
++	if (s->aarch32_fp) s->fpexc = read_sysreg(fpexc32_el2);
++	if (s->pmu) {
++		s->pmselr = read_sysreg(pmselr_el0);
++		s->pmuserenr = read_sysreg(pmuserenr_el0);
++	}
++	s->gic_access = ((pfr0 >> 24) & 15) == 1 &&
++			 (read_gicreg(ICC_SRE_EL2) & ICC_SRE_EL2_SRE);
++	s->gic_switch = s->gic_access && (id == 1 || (id >= 8 && id <= 11) || id == 13 || id == 14);
++	s->timer_switch = id == 1 || id == 6;
++	s->vcpu_run = id == 1;
++	s->gic_direct = s->vcpu_run &&
++		static_branch_unlikely(&kvm_vgic_global_state.gicv3_cpuif);
++	if (s->gic_switch) {
++		save_gic(&s->gz_gic);
++		s->kvm_gic.sre = s->gz_gic.sre;
++		s->kvm_gic.sre_el1 = s->gz_gic.sre_el1;
++		if (s->gic_direct) {
++			/* Native VCPU_RUN installs guest LRs/HCR and the v2 VMCR.
++			 * Supply its lazy APR state and a clean unused-LR baseline,
++			 * without first installing an intermediate KVM GIC bank.
++			 */
++			unsigned int i, count = (read_gicreg(ICH_VTR_EL2) & 15) + 1;
++			write_gicreg(0, ICH_HCR_EL2);
++			isb();
++			for (i = 0; i < count; i++) set_lr(i, 0);
++			/* v3 VMCR is lazy-loaded by the host and is not written by
++			 * __vgic_v3_activate_traps(). Never inherit GZ's VMCR. */
++			write_gicreg(s->kvm_gic.vmcr, ICH_VMCR_EL2);
++			__vgic_v3_restore_aprs(&s->kvm_gic.aprs);
++		} else {
++			restore_gic(&s->kvm_gic);
++		}
++	}
++	if (s->vcpu_run)
++		switch_vtimer_offset(s->kvm_cntvoff);
++	else if (s->timer_switch)
++		write_sysreg(s->kvm_cntvoff, cntvoff_el2);
++	/* Retain the host's stage-2 enable and GZ controls at native guest exit. */
++	this_cpu_ptr(&kvm_init_params)->hcr_el2 = s->hcr;
++}
++
++void __gz_restore_host_stage2(void)
++{
++	struct gz_kvm_context *s = current_context();
++	write_sysreg(s->vtcr, vtcr_el2);
++	write_sysreg(s->vttbr, vttbr_el2);
++	isb();
++}
++
++/* Native guest exit restores the real GZ host trap state directly. */
++void __gz_restore_host_traps(void)
++{
++	struct gz_kvm_context *s = current_context();
++	write_sysreg(s->hstr, hstr_el2);
++	write_sysreg(s->mdcr, mdcr_el2);
++	write_sysreg(s->cptr, cptr_el2);
++	write_sysreg(s->hcr, hcr_el2);
++}
++
++void __gz_restore_system(struct gz_kvm_context *s)
++{
++	/* VCPU_RUN already restored host stage-2 in its native exit path. */
++	if (!s->vcpu_run)
++		__gz_restore_host_stage2();
++	if (s->gic_switch) {
++		if (s->gic_direct) {
++			/* Native exit has saved/cleared the guest LRs. Keep only
++			 * state consumed by the host's lazy VGIC control calls.
++			 */
++			__vgic_v3_save_aprs(&s->kvm_gic.aprs);
++			s->kvm_gic.vmcr = read_gicreg(ICH_VMCR_EL2);
++			s->kvm_gic.hcr = read_gicreg(ICH_HCR_EL2);
++		} else {
++			save_gic(&s->kvm_gic);
++		}
++		restore_gic(&s->gz_gic);
++	}
++	if (s->timer_switch)
++		s->kvm_cntvoff = read_sysreg(cntvoff_el2);
++	write_sysreg(0, cnthp_ctl_el2);
++	write_sysreg(s->cnthp_cval, cnthp_cval_el2);
++	write_sysreg(s->cnthp_ctl, cnthp_ctl_el2);
++#define RESTORE(reg) write_sysreg(s->reg, reg##_el2)
++	RESTORE(cnthctl);
++	if (s->vcpu_run)
++		switch_vtimer_offset(s->cntvoff);
++	else
++		RESTORE(cntvoff);
++	if (!s->vcpu_run) {
++		RESTORE(cptr); RESTORE(hstr); RESTORE(mdcr); RESTORE(hcr);
++	}
++	RESTORE(elr); RESTORE(spsr); RESTORE(esr); RESTORE(far); RESTORE(hpfar);
++	RESTORE(sctlr);
++#undef RESTORE
++	if (s->sve) write_sysreg_s(s->zcr, SYS_ZCR_EL2);
++	if (s->ras) write_sysreg_s(s->vsesr, SYS_VSESR_EL2);
++	if (s->aarch32_fp) write_sysreg(s->fpexc, fpexc32_el2);
++	if (s->pmu) {
++		write_sysreg(s->pmselr, pmselr_el0);
++		write_sysreg(s->pmuserenr, pmuserenr_el0);
++	}
++	isb();
++	/* Assembly restores TPIDR, SP banks, VBAR and finally DAIF. */
++}
++
++struct gz_hcall_result { unsigned long a0, a1, a2, a3; };
++
++/* Run on the existing GZ stack. These operations never install a KVM EL2
++ * environment; guest control state is staged in software until VCPU_RUN.
++ */
++struct gz_hcall_result __gz_direct_control(unsigned long fid, unsigned long a1,
++		unsigned long a2, unsigned long a3, unsigned long a4,
++		unsigned long a5, unsigned long a6, unsigned long a7)
++{
++	struct gz_kvm_context *s = current_context();
++	unsigned long id = fid - 0xc6000000UL;
++	unsigned long value = a1;
++	unsigned int i, count, pre_bits;
++	struct vgic_v3_cpu_if *cpu_if;
++
++	if (id == 0) {
++		u64 pfr0 = read_sysreg(id_aa64pfr0_el1);
++		u64 hcr = read_sysreg(hcr_el2);
++		u64 cnthctl = read_sysreg(cnthctl_el2);
++		if (a1 != GZ_PT_MAGIC || a2 != 1 || a3 || a4 || a5 || a6 || a7 ||
++		    (read_sysreg(tcr_el2) & 63) != 28 || ((pfr0 >> 24) & 15) != 1 ||
++		    !(read_gicreg(ICC_SRE_EL2) & ICC_SRE_EL2_SRE) ||
++		    get_vmid_bits(read_sysreg(id_aa64mmfr1_el1)) != 16 ||
++		    (read_sysreg(vtcr_el2) & VTCR_EL2_VS_16BIT) ||
++		    (cnthctl & (CNTHCTL_EL1PCTEN | CNTHCTL_EL1PCEN)) !=
++				 (CNTHCTL_EL1PCTEN | CNTHCTL_EL1PCEN) ||
++		    (hcr & HCR_E2H) || !(hcr & HCR_VM))
++			return (struct gz_hcall_result){SMCCC_RET_NOT_SUPPORTED, 0, 0, 0};
++		return (struct gz_hcall_result){0, GZ_PT_MAGIC, 1, 0};
++	}
++	if ((id >= 9 && id <= 11) || id == 13 || id == 14) {
++		if (((read_sysreg(id_aa64pfr0_el1) >> 24) & 15) != 1 ||
++		    !(read_gicreg(ICC_SRE_EL2) & ICC_SRE_EL2_SRE))
++			return (struct gz_hcall_result){SMCCC_RET_NOT_SUPPORTED, 0, 0, 0};
++	}
++	switch (id) {
++	case 6:
++		s->kvm_cntvoff = a1;
++		/* EL1 translates a loaded comparator against this retained host
++		 * offset until the next real guest entry.
++		 */
++		value = read_sysreg(cntvoff_el2);
++		break;
++	case 9:
++		value = s->kvm_gic.vmcr;
++		break;
++	case 10:
++		s->kvm_gic.vmcr = (u32)a1;
++		break;
++	case 11:
++		count = (read_gicreg(ICH_VTR_EL2) & 15) + 1;
++		for (i = 0; i < count; i++) s->kvm_gic.lr[i] = 0;
++		break;
++	case 12:
++		value = read_sysreg(mdcr_el2);
++		break;
++	case 13:
++	case 14:
++		cpu_if = kern_hyp_va((struct vgic_v3_cpu_if *)a1);
++		pre_bits = (((u32)read_gicreg(ICH_VTR_EL2) >> 26) & 7) + 1;
++		count = pre_bits == 7 ? 4 : pre_bits == 6 ? 2 : 1;
++		for (i = 0; i < count; i++) {
++			if (id == 13) {
++				cpu_if->vgic_ap0r[i] = s->kvm_gic.aprs.vgic_ap0r[i];
++				cpu_if->vgic_ap1r[i] = s->kvm_gic.aprs.vgic_ap1r[i];
++			} else {
++				s->kvm_gic.aprs.vgic_ap0r[i] = cpu_if->vgic_ap0r[i];
++				s->kvm_gic.aprs.vgic_ap1r[i] = cpu_if->vgic_ap1r[i];
++			}
++		}
++		break;
++	default:
++		return (struct gz_hcall_result){SMCCC_RET_NOT_SUPPORTED, 0, 0, 0};
++	}
++	return (struct gz_hcall_result){0, value, 0, 0};
++}
++
++struct gz_hcall_result __gz_kvm_dispatch(unsigned long fid, unsigned long a1,
++		unsigned long a2, unsigned long a3, unsigned long a4,
++		unsigned long a5, unsigned long a6, unsigned long a7)
++{
++	struct gz_kvm_context *s = current_context();
++	struct kvm_cpu_context *ctxt = &this_cpu_ptr(&kvm_host_data)->host_ctxt;
++	unsigned long id = fid - 0xc6000000UL;
++	if (id == 0) {
++		/* Cooperating CPU handshake. Never calls ___kvm_hyp_init. */
++		if (a1 != GZ_PT_MAGIC || a2 != 1 || a3 || a4 || a5 || a6 || a7 ||
++		    (read_sysreg(tcr_el2) & 63) != 28 || !s->gic_access ||
++		    get_vmid_bits(read_sysreg(id_aa64mmfr1_el1)) != 16 ||
++		    (s->vtcr & VTCR_EL2_VS_16BIT) ||
++		    (s->cnthctl & (CNTHCTL_EL1PCTEN | CNTHCTL_EL1PCEN)) !=
++				 (CNTHCTL_EL1PCTEN | CNTHCTL_EL1PCEN) ||
++		    (s->hcr & HCR_E2H) || !(s->hcr & HCR_VM))
++			return (struct gz_hcall_result){SMCCC_RET_NOT_SUPPORTED, 0, 0, 0};
++		return (struct gz_hcall_result){0, GZ_PT_MAGIC, 1, 0};
++	}
++	if (id < 1 || id > 14 ||
++	    ((id == 1 || (id >= 8 && id <= 11) || id == 13 || id == 14) && !s->gic_access))
++		return (struct gz_hcall_result){SMCCC_RET_NOT_SUPPORTED, 0, 0, 0};
++	cpu_reg(ctxt, 0) = fid; cpu_reg(ctxt, 1) = a1;
++	cpu_reg(ctxt, 2) = a2; cpu_reg(ctxt, 3) = a3;
++	cpu_reg(ctxt, 4) = a4; cpu_reg(ctxt, 5) = a5;
++	cpu_reg(ctxt, 6) = a6; cpu_reg(ctxt, 7) = a7;
++	__gz_handle_host_hcall(ctxt); /* Uses the actual native __kvm_vcpu_run. */
++	if (id == 7 && cpu_reg(ctxt, 0) == SMCCC_RET_SUCCESS)
++		s->sctlr |= SCTLR_ELx_DSSBS;
++	return (struct gz_hcall_result){cpu_reg(ctxt, 0), cpu_reg(ctxt, 1), 0, 0};
++}
++
++void __gz_flush_vm_context(void)
++{
++	unsigned int vmid;
++	u64 tcr = read_sysreg(tcr_el1);
++	u64 vttbr = read_sysreg(vttbr_el2);
++	u64 vtcr = read_sysreg(vtcr_el2);
++	/* KVM owns hardware VMIDs 256..511; GZ's original VS=0 host owns 0..255.
++	 * Never issue the native all-VMID ALLE1IS during KVM rollover. */
++	write_sysreg(tcr | TCR_EPD0_MASK | TCR_EPD1_MASK, tcr_el1);
++	isb();
++	write_sysreg(vtcr | VTCR_EL2_VS_16BIT, vtcr_el2);
++	dsb(ishst);
++	for (vmid = 256; vmid < 512; vmid++) {
++		write_sysreg((vttbr & ~VTTBR_VMID_MASK(16)) | ((u64)vmid << VTTBR_VMID_SHIFT), vttbr_el2);
++		isb();
++		__tlbi(vmalls12e1is);
++		if (icache_is_vpipt()) asm volatile("ic ialluis");
++	}
++	dsb(ish);
++	write_sysreg(vtcr, vtcr_el2);
++	write_sysreg(vttbr, vttbr_el2);
++	isb();
++	write_sysreg(tcr, tcr_el1);
++	isb();
++}
+diff --git a/arch/arm64/kvm/hyp/nvhe/gz-entry.S b/arch/arm64/kvm/hyp/nvhe/gz-entry.S
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/kvm/hyp/nvhe/gz-entry.S
+@@ -0,0 +1,135 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#include <linux/linkage.h>
++#include <asm/assembler.h>
++#include <asm/kvm_gz_context.h>
++
++/* GZ calls this as an AAPCS64 function, with its 32-byte result buffer in x8.
++ * No takeover HVC, TTBR/TCR/MAIR write or ERET to the host occurs here. */
++SYM_FUNC_START(__gz_kvm_entry)
++	mrs x10, mpidr_el1
++	/* Compare all affinity bits, ignoring MPIDR U/MT/reserved flags. */
++	mov x11, #0xffffff
++	movk x11, #0xff, lsl #32
++	and x10, x10, x11
++	ubfx x11, x10, #8, #8
++	cmp x11, #GZ_MAX_CPUS
++	b.hs .Lgz_unavailable
++	adr_l x9, gz_cpu_contexts
++	ldr x9, [x9, x11, lsl #3]
++	cbz x9, .Lgz_unavailable
++	ldr x11, [x9, #GZ_CTX_MPIDR]
++	cmp x10, x11
++	b.ne .Lgz_unavailable
++	ldr x11, [x9, #GZ_CTX_CONFIGURED]
++	cbz x11, .Lgz_unavailable
++	mrs x12, daif
++	msr daifset, #0xf
++	ldr x11, [x9, #GZ_CTX_BUSY]
++	cbnz x11, .Lgz_busy
++	mov x11, #1
++	str x11, [x9, #GZ_CTX_BUSY]
++	/* Control operations use GZ's current stack and per-CPU environment. */
++	mov x10, #0xc6000000
++	cmp x0, x10
++	b.eq .Lgz_direct
++	add x10, x10, #6
++	cmp x0, x10
++	b.eq .Lgz_direct
++	add x10, x10, #3
++	cmp x0, x10
++	b.lo .Lgz_full
++	add x10, x10, #5
++	cmp x0, x10
++	b.ls .Lgz_direct
++.Lgz_full:
++	stp x18, x19, [x9, #0]
++	stp x20, x21, [x9, #16]
++	stp x22, x23, [x9, #32]
++	stp x24, x25, [x9, #48]
++	stp x26, x27, [x9, #64]
++	stp x28, x29, [x9, #80]
++	str x30, [x9, #96]
++	str x8, [x9, #GZ_CTX_RESULT]
++	str x12, [x9, #GZ_CTX_DAIF]
++	mrs x11, spsel
++	str x11, [x9, #GZ_CTX_SPSEL]
++	/* SP_EL2 cannot be read by MRS at EL2. Select each bank explicitly. */
++	msr spsel, #0
++	mov x11, sp
++	str x11, [x9, #GZ_CTX_SP0]
++	msr spsel, #1
++	mov x11, sp
++	str x11, [x9, #GZ_CTX_SP1]
++	mrs x11, tpidr_el2
++	str x11, [x9, #GZ_CTX_TPIDR]
++	ldr x11, [x9, #GZ_CTX_STACK]
++	mov sp, x11
++	ldr x11, [x9, #GZ_CTX_PERCPU]
++	msr tpidr_el2, x11
++	mov x19, x9
++	stp x0, x1, [sp, #-64]!
++	stp x2, x3, [sp, #16]
++	stp x4, x5, [sp, #32]
++	stp x6, x7, [sp, #48]
++	mov x0, x19
++	/* Only guest/VGIC calls need a GIC bank switch. */
++	ldr x1, [sp]
++	bl __gz_save_system
++	ldp x0, x1, [sp]
++	ldp x2, x3, [sp, #16]
++	ldp x4, x5, [sp, #32]
++	ldp x6, x7, [sp, #48]
++	add sp, sp, #64
++	ldr x8, [x19, #GZ_CTX_RESULT]
++	bl __gz_kvm_dispatch
++	mov x0, x19
++	bl __gz_restore_system
++	mov x9, x19
++	ldr x11, [x9, #GZ_CTX_TPIDR]
++	msr tpidr_el2, x11
++	ldr x11, [x9, #GZ_CTX_SP0]
++	msr spsel, #0
++	mov sp, x11
++	ldr x11, [x9, #GZ_CTX_SP1]
++	msr spsel, #1
++	mov sp, x11
++	ldr x11, [x9, #GZ_CTX_SPSEL]
++	msr spsel, x11
++	/* Restore GZ vectors only once its TPIDR and both stack banks are valid. */
++	ldr x11, [x9, #GZ_CTX_VBAR]
++	msr vbar_el2, x11
++	isb
++	str xzr, [x9, #GZ_CTX_BUSY]
++	/* x9 is caller-saved and survives the final register restores. */
++	ldp x18, x19, [x9, #0]
++	ldp x20, x21, [x9, #16]
++	ldp x22, x23, [x9, #32]
++	ldp x24, x25, [x9, #48]
++	ldp x26, x27, [x9, #64]
++	ldp x28, x29, [x9, #80]
++	ldr x30, [x9, #96]
++	ldr x11, [x9, #GZ_CTX_DAIF]
++	msr daif, x11
++	ret
++.Lgz_direct:
++	/* AAPCS frame only: no EL2 runtime register or stack-bank switch. */
++	stp x29, x30, [sp, #-32]!
++	stp x19, x20, [sp, #16]
++	mov x29, sp
++	mov x19, x9
++	mov x20, x12
++	bl __gz_direct_control
++	str xzr, [x19, #GZ_CTX_BUSY]
++	mov x12, x20
++	ldp x19, x20, [sp, #16]
++	ldp x29, x30, [sp], #32
++	msr daif, x12
++	ret
++.Lgz_busy:
++	msr daif, x12
++.Lgz_unavailable:
++	mov x9, #-1
++	stp x9, xzr, [x8]
++	stp xzr, xzr, [x8, #16]
++	ret
++SYM_FUNC_END(__gz_kvm_entry)
+diff --git a/arch/arm64/kvm/hyp/nvhe/hyp-main.c b/arch/arm64/kvm/hyp/nvhe/hyp-main.c
+--- a/arch/arm64/kvm/hyp/nvhe/hyp-main.c
++++ b/arch/arm64/kvm/hyp/nvhe/hyp-main.c
+@@ -218,6 +218,11 @@
+ 	__kvm_hyp_host_forward_smc(host_ctxt);
+ }
+ 
++void __gz_handle_host_hcall(struct kvm_cpu_context *host_ctxt)
++{
++	handle_host_hcall(host_ctxt);
++}
++
+ static void handle_host_smc(struct kvm_cpu_context *host_ctxt)
+ {
+ 	bool handled;
+diff --git a/arch/arm64/kvm/hyp/nvhe/switch.c b/arch/arm64/kvm/hyp/nvhe/switch.c
+--- a/arch/arm64/kvm/hyp/nvhe/switch.c
++++ b/arch/arm64/kvm/hyp/nvhe/switch.c
+@@ -20,6 +20,7 @@
+ #include <asm/cpufeature.h>
+ #include <asm/kprobes.h>
+ #include <asm/kvm_asm.h>
++#include <asm/kvm_gz_context.h>
+ #include <asm/kvm_emulate.h>
+ #include <asm/kvm_hyp.h>
+ #include <asm/kvm_mmu.h>
+@@ -73,8 +74,6 @@
+ 	u64 mdcr_el2, cptr;
+ 
+ 	___deactivate_traps(vcpu);
+-
+-	mdcr_el2 = read_sysreg(mdcr_el2);
+ 
+ 	if (cpus_have_final_cap(ARM64_WORKAROUND_SPECULATIVE_AT)) {
+ 		u64 val;
+@@ -93,6 +92,14 @@
+ 		isb();
+ 	}
+ 
++	if (kvm_gz_enabled()) {
++		__gz_restore_host_traps();
++		/* The outer call frame restores GZ vectors after its stack. */
++		write_sysreg(__kvm_hyp_host_vector, vbar_el2);
++		return;
++	}
++
++	mdcr_el2 = read_sysreg(mdcr_el2);
+ 	__deactivate_traps_common();
+ 
+ 	mdcr_el2 &= MDCR_EL2_HPMN_MASK;
+@@ -229,6 +236,22 @@
+ 		/* And we're baaack! */
+ 	} while (fixup_guest_exit(vcpu, &exit_code));
+ 
++	/* GZ's outer exception/scheduling path may reinstall the host's FP
++	 * bank before EL1 resumes. Do not leave a guest's only current copy
++	 * in physical registers across that boundary, including S2 faults.
++	 * Save while the guest's CPTR and SVE vector length are still live.
++	 */
++	if (kvm_gz_enabled() && (vcpu->arch.flags & KVM_ARM64_FP_ENABLED)) {
++		if (vcpu_has_sve(vcpu)) {
++			__vcpu_sys_reg(vcpu, ZCR_EL1) = read_sysreg_el1(SYS_ZCR);
++			__sve_save_state(vcpu_sve_pffr(vcpu),
++					 &vcpu->arch.ctxt.fp_regs.fpsr);
++		} else {
++			__fpsimd_save_state(&vcpu->arch.ctxt.fp_regs);
++		}
++		__fpsimd_save_fpexc32(vcpu);
++	}
++
+ 	__sysreg_save_state_nvhe(guest_ctxt);
+ 	__sysreg32_save_state(vcpu);
+ 	__timer_disable_traps(vcpu);
+@@ -239,7 +262,7 @@
+ 
+ 	__sysreg_restore_state_nvhe(host_ctxt);
+ 
+-	if (vcpu->arch.flags & KVM_ARM64_FP_ENABLED)
++	if (!kvm_gz_enabled() && (vcpu->arch.flags & KVM_ARM64_FP_ENABLED))
+ 		__fpsimd_save_fpexc32(vcpu);
+ 
+ 	__debug_switch_to_host(vcpu);
+diff --git a/arch/arm64/kvm/hyp/nvhe/tlb.c b/arch/arm64/kvm/hyp/nvhe/tlb.c
+--- a/arch/arm64/kvm/hyp/nvhe/tlb.c
++++ b/arch/arm64/kvm/hyp/nvhe/tlb.c
+@@ -142,6 +142,10 @@
+ 
+ void __kvm_flush_vm_context(void)
+ {
++	if (kvm_gz_enabled()) {
++		__gz_flush_vm_context();
++		return;
++	}
+ 	dsb(ishst);
+ 	__tlbi(alle1is);
+ 
+diff --git a/arch/arm64/kvm/mmu.c b/arch/arm64/kvm/mmu.c
+--- a/arch/arm64/kvm/mmu.c
++++ b/arch/arm64/kvm/mmu.c
+@@ -18,6 +18,7 @@
+ #include <asm/kvm_ras.h>
+ #include <asm/kvm_asm.h>
+ #include <asm/kvm_emulate.h>
++#include <asm/kvm_gz.h>
+ #include <asm/virt.h>
+ 
+ #include "trace.h"
+@@ -248,6 +249,8 @@
+ 				 unsigned long phys, enum kvm_pgtable_prot prot)
+ {
+ 	int err;
++	if (kvm_gz_enabled())
++		return kvm_gz_map(start, phys, size, prot);
+ 
+ 	if (!kvm_host_owns_hyp_mappings()) {
+ 		return kvm_call_hyp_nvhe(__pkvm_create_mappings,
+@@ -294,15 +297,24 @@
+ 
+ 	start = start & PAGE_MASK;
+ 	end = PAGE_ALIGN(end);
+-
+-	for (virt_addr = start; virt_addr < end; virt_addr += PAGE_SIZE) {
++	if (kvm_gz_enabled())
++		from = (void *)((unsigned long)from & PAGE_MASK);
++
++	for (virt_addr = start; virt_addr < end;) {
+ 		int err;
++		unsigned long length = PAGE_SIZE;
+ 
+ 		phys_addr = kvm_kaddr_to_phys(from + virt_addr - start);
+-		err = __create_hyp_mappings(virt_addr, PAGE_SIZE, phys_addr,
++		if (kvm_gz_enabled()) {
++			while (length < end - virt_addr && length < SZ_64M &&
++			       kvm_kaddr_to_phys(from + virt_addr - start + length) == phys_addr + length)
++				length += PAGE_SIZE;
++		}
++		err = __create_hyp_mappings(virt_addr, length, phys_addr,
+ 					    prot);
+ 		if (err)
+ 			return err;
++		virt_addr += length;
+ 	}
+ 
+ 	return 0;
+@@ -314,6 +326,8 @@
+ {
+ 	unsigned long base;
+ 	int ret = 0;
++	if (kvm_gz_enabled())
++		return kvm_gz_private_map(phys_addr, size, haddr, prot);
+ 
+ 	if (!kvm_host_owns_hyp_mappings()) {
+ 		base = kvm_call_hyp_nvhe(__pkvm_create_private_mapping,
+@@ -1271,6 +1285,9 @@
+ 
+ phys_addr_t kvm_mmu_get_httbr(void)
+ {
++	/* GZ owns the root. A shared-mode caller must never install a TTBR. */
++	if (WARN_ON_ONCE(kvm_gz_enabled()))
++		return 0;
+ 	return __pa(hyp_pgtable->pgd);
+ }
+ 
+@@ -1307,6 +1324,10 @@
+ int kvm_mmu_init(u32 *hyp_va_bits)
+ {
+ 	int err;
++	if (kvm_gz_enabled()) {
++		*hyp_va_bits = 36;
++		return 0;
++	}
+ 
+ 	hyp_idmap_start = __pa_symbol(__hyp_idmap_text_start);
+ 	hyp_idmap_start = ALIGN_DOWN(hyp_idmap_start, PAGE_SIZE);
+diff --git a/arch/arm64/kvm/sys_regs.c b/arch/arm64/kvm/sys_regs.c
+--- a/arch/arm64/kvm/sys_regs.c
++++ b/arch/arm64/kvm/sys_regs.c
+@@ -22,6 +22,7 @@
+ #include <asm/esr.h>
+ #include <asm/kvm_arm.h>
+ #include <asm/kvm_emulate.h>
++#include <asm/kvm_gz.h>
+ #include <asm/kvm_hyp.h>
+ #include <asm/kvm_mmu.h>
+ #include <asm/perf_event.h>
+@@ -95,10 +96,61 @@
+ /* CSSELR values; used to index KVM_REG_ARM_DEMUX_ID_CCSIDR */
+ #define CSSELR_MAX 14
+ 
++static u64 gz_clidr __ro_after_init;
++static u32 gz_ccsidr[CSSELR_MAX] __ro_after_init;
++
++/*
++ * GZ permits vCPUs to migrate between unlike host cache geometries. Cache
++ * IDs are invariant guest state: GET/SET_ONE_REG and guest traps must use
++ * one identity rather than whichever physical CPU services the request.
++ * Capture the complete identity on one CPU before publishing the tables.
++ * Set/way operations remain trapped and data geometry is still reduced
++ * by access_ccsidr(), independently of these userspace invariant values.
++ */
++static void init_gz_cache_regs(void)
++{
++	u64 saved_csselr;
++	u32 level, ctype, selector;
++	unsigned long flags;
++
++	if (!kvm_gz_enabled())
++		return;
++
++	local_irq_save(flags);
++	gz_clidr = read_sysreg(clidr_el1);
++	saved_csselr = read_sysreg(csselr_el1);
++	for (level = 0; level < CSSELR_MAX / 2; level++) {
++		ctype = (gz_clidr >> (level * 3)) & 7;
++		if (!ctype)
++			break;
++		for (selector = level * 2; selector < level * 2 + 2; selector++) {
++			if ((selector & 1) ? (ctype != 1 && ctype != 3) :
++					     (ctype != 2 && ctype != 3 && ctype != 4))
++				continue;
++			write_sysreg(selector, csselr_el1);
++			isb();
++			gz_ccsidr[selector] = read_sysreg(ccsidr_el1);
++		}
++	}
++	write_sysreg(saved_csselr, csselr_el1);
++	isb();
++	local_irq_restore(flags);
++}
++
++static u64 get_cache_clidr(void)
++{
++	if (kvm_gz_enabled())
++		return gz_clidr;
++	return read_sysreg(clidr_el1);
++}
++
+ /* Which cache CCSIDR represents depends on CSSELR value. */
+ static u32 get_ccsidr(u32 csselr)
+ {
+ 	u32 ccsidr;
++
++	if (kvm_gz_enabled())
++		return csselr < CSSELR_MAX ? gz_ccsidr[csselr] : 0;
+ 
+ 	/* Make sure noone else changes CSSELR during this! */
+ 	local_irq_disable();
+@@ -1262,7 +1314,7 @@
+ 	if (p->is_write)
+ 		return write_to_read_only(vcpu, p, r);
+ 
+-	p->regval = read_sysreg(clidr_el1);
++	p->regval = get_cache_clidr();
+ 	return true;
+ }
+ 
+@@ -2431,8 +2483,12 @@
+ 
+ FUNCTION_INVARIANT(midr_el1)
+ FUNCTION_INVARIANT(revidr_el1)
+-FUNCTION_INVARIANT(clidr_el1)
+ FUNCTION_INVARIANT(aidr_el1)
++
++static void get_clidr_el1(struct kvm_vcpu *v, const struct sys_reg_desc *r)
++{
++	((struct sys_reg_desc *)r)->val = get_cache_clidr();
++}
+ 
+ static void get_ctr_el0(struct kvm_vcpu *v, const struct sys_reg_desc *r)
+ {
+@@ -2751,6 +2807,8 @@
+ {
+ 	unsigned int i;
+ 	struct sys_reg_desc clidr;
++
++	init_gz_cache_regs();
+ 
+ 	/* Make sure tables are unique and in order. */
+ 	BUG_ON(check_sysreg_table(sys_reg_descs, ARRAY_SIZE(sys_reg_descs), false));
+diff --git a/arch/arm64/kvm/va_layout.c b/arch/arm64/kvm/va_layout.c
+--- a/arch/arm64/kvm/va_layout.c
++++ b/arch/arm64/kvm/va_layout.c
+@@ -11,6 +11,7 @@
+ #include <asm/debug-monitors.h>
+ #include <asm/insn.h>
+ #include <asm/kvm_mmu.h>
++#include <asm/kvm_gz.h>
+ #include <asm/memory.h>
+ 
+ /*
+@@ -71,6 +72,12 @@
+ 
+ 	va_mask = GENMASK_ULL(tag_lsb - 1, 0);
+ 	tag_val = hyp_va_msb;
++
++	if (kvm_gz_layout_valid(tag_lsb)) {
++		tag_val = GZ_PT_LINEAR_BASE >> tag_lsb;
++		init_hyp_physvirt_offset();
++		return;
++	}
+ 
+ 	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE) && tag_lsb != (vabits_actual - 1)) {
+ 		/* We have some free bits to insert a random tag. */
+diff --git a/drivers/clocksource/arm_arch_timer.c b/drivers/clocksource/arm_arch_timer.c
+--- a/drivers/clocksource/arm_arch_timer.c
++++ b/drivers/clocksource/arm_arch_timer.c
+@@ -27,6 +27,10 @@
+ 
+ #include <asm/arch_timer.h>
+ #include <asm/virt.h>
++
++#if defined(CONFIG_ARM64) && defined(CONFIG_KVM)
++#include <asm/kvm_gz.h>
++#endif
+ 
+ #include <clocksource/arm_arch_timer.h>
+ 
+@@ -987,6 +991,18 @@
+ 
+ static struct arch_timer_kvm_info arch_timer_kvm_info;
+ 
++static bool __init arch_timer_has_gz_kvm(void)
++{
++#if defined(CONFIG_ARM64) && defined(CONFIG_KVM)
++	/* The matching GZ firmware enables EL1 physical timer/counter access.
++	 * Reserve the virtual timer for nVHE only after its service is verified.
++	 */
++	return kvm_gz_probe();
++#else
++	return false;
++#endif
++}
++
+ struct arch_timer_kvm_info *arch_timer_get_kvm_info(void)
+ {
+ 	return &arch_timer_kvm_info;
+@@ -1000,7 +1016,8 @@
+ 	if (type & ARCH_TIMER_TYPE_CP15) {
+ 		u64 (*rd)(void);
+ 
+-		if ((IS_ENABLED(CONFIG_ARM64) && !is_hyp_mode_available()) ||
++		if ((IS_ENABLED(CONFIG_ARM64) && !is_hyp_mode_available() &&
++		     !arch_timer_has_gz_kvm()) ||
+ 		    arch_timer_uses_ppi == ARCH_TIMER_VIRT_PPI) {
+ 			if (arch_timer_counter_has_wa())
+ 				rd = arch_counter_get_cntvct_stable;
+@@ -1245,6 +1262,8 @@
+  * If HYP mode is available, we know that the physical timer
+  * has been configured to be accessible from PL1. Use it, so
+  * that a guest can use the virtual timer instead.
++ * The verified GZ shared service has the same physical access contract,
++ * although the host kernel was entered at EL1.
+  *
+  * On ARMv8.1 with VH extensions, the kernel runs in HYP. VHE
+  * accesses to CNTP_*_EL1 registers are silently redirected to
+@@ -1262,7 +1281,8 @@
+ 	if (is_kernel_in_hyp_mode())
+ 		return ARCH_TIMER_HYP_PPI;
+ 
+-	if (!is_hyp_mode_available() && arch_timer_ppi[ARCH_TIMER_VIRT_PPI])
++	if (!is_hyp_mode_available() && !arch_timer_has_gz_kvm() &&
++	    arch_timer_ppi[ARCH_TIMER_VIRT_PPI])
+ 		return ARCH_TIMER_VIRT_PPI;
+ 
+ 	if (IS_ENABLED(CONFIG_ARM64))
+diff --git a/drivers/irqchip/irq-gic-v3.c b/drivers/irqchip/irq-gic-v3.c
+--- a/drivers/irqchip/irq-gic-v3.c
++++ b/drivers/irqchip/irq-gic-v3.c
+@@ -32,6 +32,10 @@
+ #include <asm/exception.h>
+ #include <asm/smp_plat.h>
+ #include <asm/virt.h>
++
++#if defined(CONFIG_ARM64) && defined(CONFIG_KVM)
++#include <asm/kvm_gz.h>
++#endif
+ 
+ #include <trace/hooks/gic.h>
+ 
+@@ -1824,6 +1828,22 @@
+ 		gic_chip.flags |= IRQCHIP_SUPPORTS_NMI;
+ }
+ 
++static bool __init gic_kvm_available(void)
++{
++	if (is_hyp_mode_available())
++		return true;
++
++#if defined(CONFIG_ARM64) && defined(CONFIG_KVM)
++	/* GZ enters Linux at EL1. Only its explicitly requested, validated
++	 * shared service allows KVM to use split EOI and the maintenance IRQ.
++	 * This read-only probe is also used by the early timer setup.
++	 */
++	return kvm_gz_probe();
++#else
++	return false;
++#endif
++}
++
+ static int __init gic_init_bases(void __iomem *dist_base,
+ 				 struct redist_region *rdist_regs,
+ 				 u32 nr_redist_regions,
+@@ -1833,7 +1853,7 @@
+ 	u32 typer;
+ 	int err;
+ 
+-	if (!is_hyp_mode_available())
++	if (!gic_kvm_available())
+ 		static_branch_disable(&supports_deactivate_key);
+ 
+ 	if (static_branch_likely(&supports_deactivate_key))
