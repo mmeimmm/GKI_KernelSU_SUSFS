@@ -11,7 +11,7 @@ PATCHES=ROOT/'patches/gz-kvm'
 REQUIRED_CONFIG={
     'CONFIG_VIRTUALIZATION':'y','CONFIG_KVM':'y','CONFIG_ARM64_VHE':'y',
     'CONFIG_ARM64_4K_PAGES':'y','CONFIG_ARM64_VA_BITS':'39',
-    'CONFIG_LTO_CLANG_FULL':'y','CONFIG_CFI_CLANG':'y','CONFIG_CMDLINE_EXTEND':'y',
+    'CONFIG_CFI_CLANG':'y','CONFIG_CMDLINE_EXTEND':'y',
     'CONFIG_SYSVIPC':'y','CONFIG_POSIX_MQUEUE':'y','CONFIG_IPC_NS':'y',
     'CONFIG_PID_NS':'y','CONFIG_DEVTMPFS':'y',
 }
@@ -83,7 +83,7 @@ def configure(common,report):
     args=[]
     for key,value in REQUIRED_CONFIG.items():
         args+=['--enable',key[7:]] if value=='y' else ['--set-val',key[7:],value]
-    for key in ('LTO_CLANG_THIN','LTO_NONE','ARM64_16K_PAGES','ARM64_64K_PAGES','ARM64_VA_BITS_48','CMDLINE_FORCE'):
+    for key in ('ARM64_16K_PAGES','ARM64_64K_PAGES','ARM64_VA_BITS_48','CMDLINE_FORCE'):
         args+=['--disable',key]
     args+=['--enable','ARM64_VA_BITS_39','--set-str','CMDLINE',
            ' '.join(['kvm-arm.gz=shared','kvm-arm.mode=nvhe']+tokens)]

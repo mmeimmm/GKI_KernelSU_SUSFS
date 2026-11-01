@@ -47,9 +47,7 @@ def main(commit):
         if step['name'] not in baseline_names:
             assert 'inputs.use_gz_kvm' in step['if'] and '!inputs.use_gz_kvm' not in step['if']
             added.append(step);continue
-        if step['name']=='编译内核':
-            assert step.pop('if')=='${{ !inputs.use_gz_kvm }}'
-        elif step['name']=='构建 Boot 镜像 (Android 12)':
+        if step['name']=='构建 Boot 镜像 (Android 12)':
             assert step['if']=="inputs.android_version == 'android12' && !inputs.use_gz_kvm"
             step['if']="inputs.android_version == 'android12'"
         original_steps.append(step)
@@ -57,9 +55,11 @@ def main(commit):
     assert off==base_build,'An existing reusable build step or setting changed'
     names={s['name']:i for i,s in enumerate(build['jobs']['build-kernel']['steps'])}
     assert names['初始化并同步内核源码']<names['应用 GZ/KVM 精确版本补丁']<names['应用 Stock Config 伪装']
-    assert names['添加 SUSFS 配置']<names['配置 GZ/KVM 与 IPC ABI']<names['编译 GZ/KVM 内核']<names['核对 GZ/KVM 成品']<names['准备 Boot 镜像']
-    gz_compile=next(s for s in added if s['name']=='编译 GZ/KVM 内核')
-    assert 'LTO=full' in gz_compile['with']['command']
+    assert names['添加 SUSFS 配置']<names['配置 GZ/KVM 与 IPC ABI']<names['编译内核']<names['核对 GZ/KVM 成品']<names['准备 Boot 镜像']
+    assert '编译 GZ/KVM 内核' not in names,'GZ must reuse the original compiler step'
+    assert not any('LTO=full' in str(s) for s in added),'GZ must not override ThinLTO'
+    report=next(s for s in added if s['name']=='上传 GZ/KVM 核对报告')
+    assert 'build-logs/' in report['with']['path']
     assert 'LTO=thin' in next(s for s in original_steps if s['name']=='编译内核')['with']['command']
     # All local reusable workflow calls resolve and supply valid required inputs.
     for p in (ROOT/'.github/workflows').glob('*.yml'):

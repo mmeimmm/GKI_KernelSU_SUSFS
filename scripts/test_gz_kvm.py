@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -21,14 +22,27 @@ class GZChecks(unittest.TestCase):
     def test_user_features_and_cmdline_preserved(self):
         with self.config.open('a') as f:
             f.write('\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_BBG=y\nCONFIG_ZRAM=y\n')
+            f.write('# CONFIG_LTO_CLANG_FULL is not set\nCONFIG_LTO_CLANG_THIN=y\n')
             f.write('CONFIG_CMDLINE="console=ttyS0 custom=123 kvm-arm.mode=protected"\n')
         gz.configure(self.common,self.report)
         r=gz.configurations(self.config)
         for key in ('CONFIG_KSU','CONFIG_KSU_SUSFS','CONFIG_BBG','CONFIG_ZRAM'):self.assertEqual(r[key],'y')
         tokens=json.loads(r['CONFIG_CMDLINE']).split()
         self.assertEqual(tokens,['kvm-arm.gz=shared','kvm-arm.mode=nvhe','console=ttyS0','custom=123'])
-        self.assertEqual(r['CONFIG_LTO_CLANG_FULL'],'y')
-        self.assertEqual(r['CONFIG_LTO_CLANG_THIN'],'n')
+        self.assertEqual(r['CONFIG_LTO_CLANG_FULL'],'n')
+        self.assertEqual(r['CONFIG_LTO_CLANG_THIN'],'y')
+
+    def test_existing_lto_selection_preserved(self):
+        for full,thin in (('y','n'),('n','y')):
+            with self.subTest(full=full,thin=thin):
+                subprocess_args=['--enable' if full=='y' else '--disable','LTO_CLANG_FULL',
+                                 '--enable' if thin=='y' else '--disable','LTO_CLANG_THIN']
+                subprocess.run([str(self.common/'scripts/config'),'--file',str(self.config),
+                                *subprocess_args],check=True)
+                gz.configure(self.common,self.report)
+                r=gz.configurations(self.config)
+                self.assertEqual(r['CONFIG_LTO_CLANG_FULL'],full)
+                self.assertEqual(r['CONFIG_LTO_CLANG_THIN'],thin)
 
     def test_config_and_padding_idempotent(self):
         gz.configure(self.common,self.report)
